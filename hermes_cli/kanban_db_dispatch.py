@@ -113,6 +113,8 @@ class DispatchResult:
     :func:`reap_terminal_workers`."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """``(task_id, assignee, workspace_path)`` triples."""
+    skipped_fenced_tenant: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, tenant)`` cards held out by the tenant fence."""
     skipped_unassigned: list[str] = field(default_factory=list)
     """Ready task ids with no assignee at all — operator-actionable (usually a
     misfiled task waiting for routing)."""
@@ -1766,10 +1768,12 @@ def dispatch_profile_allowlist_summary() -> str:
 
 
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
+    allowed = sorted(_kb._allowed_dispatch_tenants())
+    predicate = f"(tenant IS NULL OR TRIM(tenant) = '' OR tenant IN ({','.join('?' for _ in allowed)}))" if allowed else "(tenant IS NULL OR TRIM(tenant) = '')"
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL",
-        (status,),
+        "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL AND " + predicate,
+        (status, *allowed),
     ).fetchall()
     if not rows:
         return False
@@ -2046,6 +2050,13 @@ def _dispatch_lane_task(
     skip is recorded on ``result``.
     """
     task_id = row["id"]
+    if not _kb.tenant_dispatch_allowed(row["tenant"]):
+        _kb._log.warning(
+            "kanban: TENANT FENCE BREACH: %s (tenant=%r) reached dispatch despite the lane filter",
+            task_id, row["tenant"],
+        )
+        result.skipped_fenced_tenant.append((task_id, str(row["tenant"])))
+        return False
     # Non-profile assignees (control-plane lanes that pull via ``claim_task``)
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
@@ -2270,12 +2281,15 @@ def _tick_spawn_budget(
     return True, spawn_budget
 
 
-def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
+def _lane_rows(conn: sqlite3.Connection, status: str, allowed_tenants: frozenset[str]) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
+    allowed = sorted(allowed_tenants)
+    predicate = f"(tenant IS NULL OR TRIM(tenant) = '' OR tenant IN ({','.join('?' for _ in allowed)}))" if allowed else "(tenant IS NULL OR TRIM(tenant) = '')"
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, tenant FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
+        f"AND {predicate} ORDER BY priority DESC, created_at ASC",
+        allowed,
     ).fetchall()
 
 
@@ -2354,16 +2368,31 @@ def _dispatch_once_locked(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
     )
+    allowed = _kb._allowed_dispatch_tenants()
+    held = conn.execute(
+        "SELECT id, tenant FROM tasks WHERE status IN ('ready','review') "
+        "AND claim_lock IS NULL AND tenant IS NOT NULL ORDER BY created_at ASC"
+    ).fetchall()
+    result.skipped_fenced_tenant = [
+        (row["id"], row["tenant"]) for row in held
+        if str(row["tenant"]).strip() and row["tenant"] not in allowed
+    ]
+    if result.skipped_fenced_tenant:
+        _kb._log.warning(
+            "kanban: tenant fence held %d card(s) out of dispatch: %s",
+            len(result.skipped_fenced_tenant),
+            ", ".join(f"{tid}(tenant={tenant})" for tid, tenant in result.skipped_fenced_tenant),
+        )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )
     if not may_spawn:
         return result
 
-    ready_rows = _lane_rows(conn, "ready")
+    ready_rows = _lane_rows(conn, "ready", allowed)
     # Review rows are enumerated up front so the budget split can see whether
     # review work exists at all.
-    review_rows = _lane_rows(conn, "review") if review_dispatch_enabled() else []
+    review_rows = _lane_rows(conn, "review", allowed) if review_dispatch_enabled() else []
     # Per-profile cap. Deferred tasks go to skipped_per_profile_capped, not
     # skipped_unassigned — "busy, retry later" differs from "needs routing".
     # Resolved BEFORE the review reservation so the reservation can see which

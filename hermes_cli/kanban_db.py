@@ -34,6 +34,18 @@ from toolsets import get_toolset_names
 _log = logging.getLogger(__name__)
 
 
+def _allowed_dispatch_tenants() -> frozenset[str]:
+    raw = os.environ.get("HERMES_KANBAN_DISPATCH_TENANTS", "")
+    return frozenset(t.strip() for t in raw.split(",") if t.strip())
+
+
+def tenant_dispatch_allowed(tenant: Any) -> bool:
+    # NULL/empty is production and cannot be fenced by an opt-in setting.
+    if tenant is None or str(tenant).strip() == "":
+        return True
+    return str(tenant) in _allowed_dispatch_tenants()
+
+
 # --- Shared micro-helpers (row access, JSON, env, git) ---
 
 def _lossy_text(value: Any) -> Any:
@@ -2361,6 +2373,10 @@ def claim_task(
             )
             _append_event(conn, task_id, "claim_rejected", {"reason": "parents_not_done"})
             return None
+        row = conn.execute("SELECT tenant FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is not None and not tenant_dispatch_allowed(row["tenant"]):
+            _append_event(conn, task_id, "claim_rejected", {"reason": "tenant_fenced", "tenant": row["tenant"]})
+            return None
         # Close a leaked prior run so the CAS below doesn't strand it.
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
@@ -2394,6 +2410,10 @@ def claim_review_task(
                     conn, task_id, "dependency_wait",
                     {"reason": "parent_reopened", "source_status": "review"},
                 )
+            return None
+        row = conn.execute("SELECT tenant FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is not None and not tenant_dispatch_allowed(row["tenant"]):
+            _append_event(conn, task_id, "claim_rejected", {"reason": "tenant_fenced", "tenant": row["tenant"]})
             return None
         run_id = _claim_and_open_run(
             conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},

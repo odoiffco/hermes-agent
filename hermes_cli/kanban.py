@@ -427,7 +427,8 @@ def _cmd_list(args: argparse.Namespace) -> int:
             include_archived=args.archived, order_by=getattr(args, "sort", None),
             workflow_template_id=args.workflow_template_id, current_step_key=args.current_step_key,
         )
-    if _json_out(args, [_task_to_dict(t) for t in tasks]):
+        states = kb.result_states(conn, tasks)
+    if _json_out(args, [_task_to_dict(t, states[t.id]) for t in tasks]):
         return 0
     # Passive discoverability: only multi-board users see which board this is.
     try:
@@ -442,7 +443,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
         print("(no matching tasks)")
         return 0
     for t in tasks:
-        print(_fmt_task_line(t))
+        print(_fmt_task_line(t, states[t.id]))
     return 0
 
 
@@ -487,12 +488,13 @@ def _cmd_show(args: argparse.Namespace) -> int:
         runs = kb.list_runs(conn, args.task_id, **rsk)
         # Workers hand off via task_runs.summary; tasks.result stays NULL unless set.
         latest_summary = kb.latest_summary(conn, args.task_id)
+        outcome_state = kb.result_state(conn, task)
         if not want_json:
             graph = kb.task_graph_context(conn, task.id)
 
     if want_json:
         _print_json({
-            "task": _task_to_dict(task), "latest_summary": latest_summary, "parents": parents, "children": children,
+            "task": _task_to_dict(task, outcome_state), "latest_summary": latest_summary, "result_state": outcome_state, "parents": parents, "children": children,
             "comments": [_obj_dict(c, ("author", "body", "created_at")) for c in comments],
             "events": [_obj_dict(e, ("kind", "payload", "created_at", "run_id")) for e in events],
             "runs": [_obj_dict(r, _SHOW_RUN_FIELDS) for r in runs],
@@ -542,8 +544,13 @@ def _cmd_show(args: argparse.Namespace) -> int:
         field("children", ", ".join(children))
     if task.body:
         _print_section("Body:", [task.body])
+    if outcome_state:
+        field("Outcome", outcome_state)
+        if outcome_state == "no_outcome_recorded":
+            print("  ⚠ no outcome recorded; verify deliverables before trusting this closure")
     if task.result:
-        _print_section("Result:", [task.result])
+        _print_section("Result:", (["[legacy auto-placeholder — not a verified outcome]", task.result]
+                                    if outcome_state == "placeholder" else [task.result]))
     elif latest_summary:
         _print_section("Latest summary:", [latest_summary])
     if comments:

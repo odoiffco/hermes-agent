@@ -398,6 +398,11 @@ def _fmt_completed(ev, n) -> tuple:
         wake_handoff = _first_line(str(payload_summary), 200)
     elif n.task and n.task.result:
         wake_handoff = _first_line(n.task.result, 160)
+    else:
+        wake_handoff = "[no outcome recorded — verify deliverables]"
+    from hermes_cli.kanban_db import _LEGACY_PLACEHOLDER_RESULTS
+    if n.task and (n.task.result or "").strip() in _LEGACY_PLACEHOLDER_RESULTS:
+        wake_handoff = "[legacy placeholder] " + wake_handoff
     handoff = f"\n{wake_handoff}" if wake_handoff is not None else ""
     return t("gateway.kanban.ping.completed", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 

@@ -443,7 +443,8 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
     children = kb.child_ids(conn, task.id)
     return {
         **_fields(task, _TASK_SUMMARY_FIELDS), "parents": parents, "children": children,
-        "parent_count": len(parents), "child_count": len(children)}
+        "parent_count": len(parents), "child_count": len(children),
+        "result_state": kb.result_state(conn, task)}
 
 
 # --- Goal-mode judge gate ---
@@ -677,7 +678,7 @@ def _handle_show(args: dict, **kw) -> str:
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
         return json.dumps({
-            "task": _fields(task, _TASK_FIELDS),
+            "task": {**_fields(task, _TASK_FIELDS), "result_state": kb.result_state(conn, task)},
             "parents": kb.parent_ids(conn, tid),
             # Non-terminal parents; on a running card this means the dependency
             # gate is not holding it and kanban_complete will refuse.
@@ -714,8 +715,9 @@ def _handle_list(args: dict, **kw) -> str:
             tenant=args.get("tenant"), include_archived=include_archived, limit=limit + 1)
         truncated = len(rows) > limit
         tasks = rows[:limit]
+        states = kb.result_states(conn, tasks)
         return json.dumps({
-            "tasks": [_task_summary_dict(kb, conn, t) for t in tasks],
+            "tasks": [{**_task_summary_dict(kb, conn, t), "result_state": states[t.id]} for t in tasks],
             "count": len(tasks), "limit": limit, "truncated": truncated,
             "next_limit": (min(limit * 2, KANBAN_LIST_MAX_LIMIT)
                            if truncated and limit < KANBAN_LIST_MAX_LIMIT else None),

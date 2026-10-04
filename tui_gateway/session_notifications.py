@@ -310,6 +310,11 @@ def _kb_first_line(value: Any, limit: int) -> str:
 def _kb_completed(task, payload: dict, title: str) -> str:
     handoff = (_kb_first_line(payload["summary"], 200) if payload.get("summary")
                else _kb_first_line(task.result, 160) if getattr(task, "result", None) else "")
+    if not handoff:
+        handoff = "\n[no outcome recorded — verify deliverables]"
+    from hermes_cli.kanban_db import _LEGACY_PLACEHOLDER_RESULTS
+    if (getattr(task, "result", None) or "").strip() in _LEGACY_PLACEHOLDER_RESULTS:
+        handoff = "\n[legacy placeholder] " + handoff.lstrip("\n")
     return f" done — {title}{handoff}"
 
 

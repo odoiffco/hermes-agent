@@ -140,6 +140,10 @@ type KanbanMessages = {
   cancelEdit: string
   noDescription: string
   result: string
+  outcome: string
+  outcomeLabels: Record<'no_outcome_recorded' | 'placeholder' | 'verified_result' | 'summary_only', string>
+  placeholderWarning: string
+  noOutcomeWarning: string
   latestSummary: string
   dependencies: string
   blockedBy: string
@@ -373,6 +377,10 @@ export const en: KanbanMessages = {
   cancelEdit: 'Cancel edit',
   noDescription: 'No description yet.',
   result: 'Result',
+  outcome: 'Outcome',
+  outcomeLabels: { no_outcome_recorded: 'no_outcome_recorded', placeholder: 'placeholder', verified_result: 'verified_result', summary_only: 'summary_only' },
+  placeholderWarning: '[legacy auto-placeholder — not a verified outcome]',
+  noOutcomeWarning: '⚠ no outcome recorded; verify deliverables before trusting this closure',
   latestSummary: 'Latest summary',
   dependencies: 'Dependencies',
   blockedBy: 'Blocked by',
@@ -600,6 +608,10 @@ const ja: KanbanMessages = {
   cancelEdit: '編集をキャンセル',
   noDescription: 'まだ説明はありません。',
   result: '結果',
+  outcome: '結果の状態',
+  outcomeLabels: { no_outcome_recorded: 'no_outcome_recorded', placeholder: 'placeholder', verified_result: 'verified_result', summary_only: 'summary_only' },
+  placeholderWarning: '[従来の自動プレースホルダー — 検証済みの結果ではありません]',
+  noOutcomeWarning: '⚠ 結果が記録されていません。完了を信頼する前に成果物を確認してください',
   latestSummary: '最新のサマリー',
   dependencies: '依存関係',
   blockedBy: 'ブロック元',
@@ -826,6 +838,10 @@ const zh: KanbanMessages = {
   cancelEdit: '取消编辑',
   noDescription: '暂无描述。',
   result: '结果',
+  outcome: '结果状态',
+  outcomeLabels: { no_outcome_recorded: 'no_outcome_recorded', placeholder: 'placeholder', verified_result: 'verified_result', summary_only: 'summary_only' },
+  placeholderWarning: '[旧版自动占位文本 — 非已验证结果]',
+  noOutcomeWarning: '⚠ 未记录结果；信任此次完成前请核实交付物',
   latestSummary: '最新摘要',
   dependencies: '依赖关系',
   blockedBy: '受阻于',
@@ -1050,6 +1066,10 @@ const zhHant: KanbanMessages = {
   cancelEdit: '取消編輯',
   noDescription: '尚無描述。',
   result: '結果',
+  outcome: '結果狀態',
+  outcomeLabels: { no_outcome_recorded: 'no_outcome_recorded', placeholder: 'placeholder', verified_result: 'verified_result', summary_only: 'summary_only' },
+  placeholderWarning: '[舊版自動佔位文字 — 非已驗證結果]',
+  noOutcomeWarning: '⚠ 未記錄結果；信任此次完成前請核實交付物',
   latestSummary: '最新摘要',
   dependencies: '相依關係',
   blockedBy: '受阻於',

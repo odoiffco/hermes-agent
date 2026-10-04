@@ -71,18 +71,20 @@ def _bulk_apply(ids: Iterable[str], op: Callable[[str], Any],
     return 1 if failed else 0
 
 
-def _fmt_task_line(t: kb.Task) -> str:
+def _fmt_task_line(t: kb.Task, result_state: Optional[str] = None) -> str:
     icon = _STATUS_ICONS.get(t.status, "?")
     assignee = t.assignee or "(unassigned)"
     tenant = f" [{t.tenant}]" if t.tenant else ""
-    return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}  {t.title}"
+    marker = {"summary_only": " [summary-only]", "no_outcome_recorded": " [NO OUTCOME]", "placeholder": " [placeholder]"}.get(result_state, "")
+    return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}  {t.title}{marker}"
 
 
 def _obj_dict(obj: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     return {k: getattr(obj, k) for k in fields}
 
 
-def _task_to_dict(t: kb.Task) -> dict[str, Any]:
+def _task_to_dict(t: kb.Task, result_state: Optional[str] = None) -> dict[str, Any]:
     d = _obj_dict(t, _TASK_DICT_FIELDS)
     d["skills"] = list(t.skills) if t.skills else []
+    d["result_state"] = result_state
     return d

@@ -93,6 +93,25 @@ function openDrawer() {
   )
 }
 
+describe('outcome state compatibility', () => {
+  it.each([
+    ['placeholder', '[legacy auto-placeholder — not a verified outcome]'],
+    ['no_outcome_recorded', '⚠ no outcome recorded; verify deliverables before trusting this closure'],
+    ['summary_only', 'summary_only']
+  ])('renders %s from the API', async (result_state, label) => {
+    detail = { ...legacyDetail, task: { ...legacyDetail.task, status: 'done', result_state, result: 'Legacy result' } }
+    openDrawer()
+    expect(await screen.findByText(result_state === 'summary_only' ? /Outcome: summary_only/ : label)).toBeTruthy()
+  })
+
+  it('preserves the legacy payload with no state', async () => {
+    detail = { ...legacyDetail, task: { ...legacyDetail.task, status: 'done', result: 'Legacy result' } }
+    openDrawer()
+    expect(await screen.findByText('Legacy result')).toBeTruthy()
+    expect(screen.queryByText(/Outcome:/)).toBeNull()
+  })
+})
+
 describe('task attachment compatibility', () => {
   it('downloads the persisted attachment through its original remote owner', async () => {
     const save = vi.fn().mockResolvedValue({ saved: true })

@@ -114,6 +114,21 @@ def test_reader_surfaces(conn, monkeypatch):
     assert api.get_task(parent, board=None, run_state_type=None, run_state_name=None)['child_results'][0]['result_state'] == 'summary_only'
 
 
+def test_tool_list_uses_batch_state_lookup(conn, monkeypatch):
+    from tools import kanban_tools as tool
+
+    ids = [ready(conn) for _ in range(3)]
+    for tid in ids:
+        assert kb.complete_task(conn, tid, summary='off-row handoff')
+
+    monkeypatch.setattr(tool, '_require_orchestrator_tool', lambda _: None)
+    def forbid_per_task_lookup(*args):
+        raise AssertionError('list must batch summary lookups, not query each task')
+    monkeypatch.setattr(kb, 'latest_summary', forbid_per_task_lookup)
+    tasks = {task['id']: task for task in json.loads(tool._handle_list({'limit': 100}))['tasks']}
+    assert all(tasks[tid]['result_state'] == 'summary_only' for tid in ids)
+
+
 def test_notification_and_event_contract(conn):
     from gateway.kanban_watchers_notifier import _fmt_completed
     from tui_gateway.session_notifications import _kb_completed

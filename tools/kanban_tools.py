@@ -443,8 +443,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
     children = kb.child_ids(conn, task.id)
     return {
         **_fields(task, _TASK_SUMMARY_FIELDS), "parents": parents, "children": children,
-        "parent_count": len(parents), "child_count": len(children),
-        "result_state": kb.result_state(conn, task)}
+        "parent_count": len(parents), "child_count": len(children)}
 
 
 # --- Goal-mode judge gate ---

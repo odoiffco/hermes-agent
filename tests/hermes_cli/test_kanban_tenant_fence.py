@@ -125,15 +125,18 @@ def test_preexisting_null_rows_on_live_copy_still_dispatch(all_assignees_spawnab
     try:
         expected = {r["id"] for r in conn.execute(
             "SELECT id FROM tasks WHERE status IN ('ready','review') AND tenant IS NULL")}
-        assert len(expected) >= 4, f"vacuous fatality check: only {expected}"
+        assert expected, "vacuous fatality check: no NULL-tenant rows on live copy"
         spawn_calls = []
         res = kbd.dispatch_once(
             conn, dry_run=True, max_in_progress_per_profile=3,
             spawn_fn=lambda t, w, board=None: spawn_calls.append(t.id) or 1,
         )
         spawned_ids = {tid for (tid, _a, _w) in res.spawned}
-        assert expected <= spawned_ids, f"FENCE FAILS CLOSED ON PRODUCTION: {expected - spawned_ids}"
-        assert res.skipped_fenced_tenant == [], "live board has no non-NULL tenants"
+        # Other independent guards (creator provenance, profile caps, respawn
+        # cooldowns) can hold individual production rows on a changing board.
+        # The tenant fence itself must still admit at least one NULL-tenant row.
+        assert expected & spawned_ids, f"FENCE FAILS CLOSED ON PRODUCTION: {expected}"
+        assert not ({tid for tid, _tenant in res.skipped_fenced_tenant} & expected)
         assert not spawn_calls
     finally:
         conn.close()

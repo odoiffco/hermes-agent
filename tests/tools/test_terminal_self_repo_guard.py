@@ -64,6 +64,25 @@ def _run(command, config, monkeypatch, repo_root, session_cwds=None,
 
 
 class TestSelfRepoGuardWiring:
+    def test_posix_worker_blocks_direct_served_clone(self, repo, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test")
+        command = f"git clone --no-hardlinks {repo} {tmp_path / 'worker'}"
+        result, env = _run(command, _make_env_config(), monkeypatch, repo, guard_on=False)
+        assert result["status"] == "blocked"
+        assert "clone_worker_checkout.sh" in result["error"]
+        env.execute.assert_not_called()
+
+    def test_posix_nonworker_and_other_source_are_not_blocked(self, repo, monkeypatch, tmp_path):
+        command = f"git clone {repo} {tmp_path / 'worker'}"
+        result, env = _run(command, _make_env_config(), monkeypatch, repo, guard_on=False)
+        assert result["output"] == "ok"
+        env.execute.assert_called_once()
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test")
+        result, env = _run(f"git clone {tmp_path / 'other'} worker",
+                           _make_env_config(), monkeypatch, repo, guard_on=False)
+        assert result["output"] == "ok"
+        env.execute.assert_called_once()
+
     def test_blocks_checkout_in_source_repo(self, repo, monkeypatch):
         config = _make_env_config(cwd=str(repo))
         result, env = _run("git checkout pr-51020", config, monkeypatch, repo)

@@ -11,6 +11,7 @@ keeps resolving.
 
 import json
 import logging
+import os
 import re
 import shlex
 import stat
@@ -270,7 +271,7 @@ def self_repo_block(
     workdir: Optional[str],
     session_key: str,
 ) -> Optional[str]:
-    """Windows-only guard against git-mutating the checkout backing this interpreter.
+    """Guard local worker clones; on Windows also protect the live checkout.
 
     NTFS locks loaded module files, so rewriting the live checkout can corrupt
     the running process; POSIX keeps old inodes alive for open handles, so the
@@ -281,6 +282,11 @@ def self_repo_block(
     from tools.self_repo_guard import detect_self_repo_git_mutation, guard_active
     from tools.terminal_tool import _resolve_command_cwd
 
+    if os.environ.get("HERMES_KANBAN_TASK") and _bare_served_clone(command):
+        return _blocked_json(
+            "Blocked: a Kanban worker must not directly clone the served Hermes checkout. "
+            "Use `bash ~/.hermes/hermes-agent/scripts/clone_worker_checkout.sh "
+            "~/.hermes/hermes-agent <base-branch> <workspace-destination>` instead.", "blocked")
     if not guard_active():
         return None
     guard_cwd = _resolve_command_cwd(workdir=workdir, default_cwd=cwd, session_key=session_key)
@@ -289,3 +295,36 @@ def self_repo_block(
         return None
     logger.warning("Blocked self-repo git mutation (command: %s)", _safe_command_preview(command))
     return _blocked_json(msg, "blocked")
+
+
+def _bare_served_clone(command: str) -> bool:
+    """Recognize direct local git clones of this process's source (not arbitrary repos).
+
+    This intentionally covers the ordinary worker command, not scripts or indirect
+    subprocesses; the Kanban prompt supplies the canonical wrapper for those.
+    """
+    from tools.self_repo_guard import get_running_source_root
+
+    root = get_running_source_root()
+    if root is None:
+        return False
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    # Exclude shell pipelines/chains: this recognizer never treats their
+    # non-git arguments as the clone source.
+    if not words or Path(words[0]).name != "git" or any(
+        word in {";", "&&", "||", "|"} for word in words
+    ):
+        return False
+    index = 1
+    while index < len(words) and words[index] in {"-C", "-c"}:
+        index += 2
+    if index >= len(words) or words[index] != "clone":
+        return False
+    return any(
+        Path(word).expanduser().resolve() == root.resolve()
+        for word in words[index + 1:]
+        if not word.startswith("-")
+    )

@@ -66,7 +66,7 @@ Determine the current round from the history the task record already gives you: 
 | 2 | Execution | Check out the work and actually run it via `terminal`: build, test, and exercise the reported behavior yourself. Verify each handoff claim empirically instead of re-reading the artifact. |
 | 3+ | Contract | Re-read the ORIGINAL task body and acceptance criteria, then audit the deliverable strictly against them. Also verify that every item from every prior `kanban_request_changes` round actually landed. |
 
-The baseline duties in the Procedure section still apply on every round; the lens sets which inspection you lead with and weight most heavily.
+The baseline duties in the Procedure section still apply on every round; the lens sets which inspection you lead with and weight most heavily. Round 1 is not exempt from the contract audit: check every original acceptance criterion, its observable result and falsifier before the first verdict. If a criterion is missing or unfalsifiable, name that spec gap together with all discovered implementation defects in the first request for changes; do not discover one criterion per round.
 
 ### Lens variation for ad-hoc review fan-outs
 

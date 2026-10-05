@@ -27,7 +27,7 @@ from hermes_cli.kanban_db_graph import decompose_triage_task
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles as profiles_mod
 from hermes_cli.kanban_specify import (
-    _call_aux, _extract_json_blob, _load_triage_task, _task_prompt_fields, _title_body,
+    _acceptance_problem, _call_aux, _extract_json_blob, _load_triage_task, _task_prompt_fields, _title_body,
 )
 from hermes_cli.kanban_specify import _profile_author as _specify_author
 
@@ -74,6 +74,15 @@ Rules:
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
+  - EVERY child body, and the single-task body when fanout=false, MUST have
+    **Acceptance criteria** with an "Observable result:" line saying what
+    counts as done and a "Falsifier:" line saying what observation would
+    prove it is not done. Give task-specific red/green evidence: command output,
+    counts, citation verification for research, or local receipts for local-only
+    work. Do not impose remote CI on a local-only card.
+  - If any card's observable result and falsifier cannot be stated from the
+    input, do NOT emit a partial graph or a dispatchable card. Return
+    {"refused": true, "reason": "<missing decision or evidence>"} instead.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:
@@ -221,6 +230,9 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
 def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
     """``fanout=false``: single-task spec promotion (same effect as specify)."""
     title_val, body_val = _title_body(parsed)
+    problem = _acceptance_problem(body_val)
+    if problem:
+        return DecomposeOutcome(task.id, False, problem)
     assignee_val = None
     if not task.assignee:
         assignee_val = _normalize_assignee_choice(
@@ -248,6 +260,9 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
         if not isinstance(title, str) or not title.strip():
             return [], f"tasks[{idx}].title is missing or empty"
         body = entry.get("body")
+        problem = _acceptance_problem(body if isinstance(body, str) else None)
+        if problem:
+            return [], f"tasks[{idx}]: {problem}"
         assignee = entry.get("assignee")
         chosen = _normalize_assignee_choice(
             assignee, default_assignee=routing.default_assignee, valid_names=routing.valid_names,
@@ -329,6 +344,9 @@ def decompose_task(
     parsed = _extract_json_blob(raw, _FENCE_RE)
     if parsed is None:
         return DecomposeOutcome(task_id, False, "LLM returned malformed JSON")
+
+    if parsed.get("refused"):
+        return DecomposeOutcome(task_id, False, f"acceptance cannot be stated: {str(parsed.get('reason') or 'unspecified')[:300]}")
 
     audit_author = author or _profile_author()
     if not parsed.get("fanout"):

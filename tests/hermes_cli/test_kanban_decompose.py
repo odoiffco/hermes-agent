@@ -16,6 +16,10 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_decompose as decomp
+from hermes_cli.kanban_specify import _acceptance_problem
+
+ACCEPTANCE = ("**Acceptance criteria**\nObservable result: Local check output records a pass."
+              "\nFalsifier: Local check output records a failure.")
 
 
 @pytest.fixture
@@ -84,8 +88,8 @@ def test_decompose_with_fanout_creates_children(kanban_home):
         "fanout": True,
         "rationale": "test split",
         "tasks": [
-            {"title": "research", "body": "look it up", "assignee": "researcher", "parents": []},
-            {"title": "build", "body": "code it", "assignee": "engineer", "parents": [0]},
+            {"title": "research", "body": ACCEPTANCE, "assignee": "researcher", "parents": []},
+            {"title": "build", "body": ACCEPTANCE, "assignee": "engineer", "parents": [0]},
         ],
     })
 
@@ -112,6 +116,45 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.status == "todo"
     assert c0.assignee == "researcher"
     assert c1.assignee == "engineer"
+    assert c0 is not None and c1 is not None
+    assert sum(not _acceptance_problem(card.body) for card in (c0, c1)) == 2
+
+
+def test_decompose_refuses_entire_graph_when_child_has_no_falsifier(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Research and build", triage=True)
+    payload = jsonlib.dumps({"fanout": True, "tasks": [
+        {"title": "Research", "body": ACCEPTANCE, "assignee": None, "parents": []},
+        {"title": "Build", "body": "**Acceptance criteria**\n- Make it work.",
+         "assignee": None, "parents": [0]},
+    ]})
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(payload):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+    assert not outcome.ok
+    assert "acceptance" in outcome.reason.lower()
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "triage"
+        assert kb.list_tasks(conn, include_archived=False) == [task]
+
+
+def test_decompose_refuses_single_without_acceptance(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Single unit", triage=True)
+    payload = jsonlib.dumps({"fanout": False, "title": "Single unit", "body": "Make it work."})
+    with _patch_aux_client(payload):
+        outcome = decomp.decompose_task(tid, author="me")
+    assert not outcome.ok and "acceptance" in outcome.reason
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "triage"
 
 
 def test_decompose_fanout_children_inherit_root_assignee_when_unrouted(kanban_home):
@@ -126,8 +169,8 @@ def test_decompose_fanout_children_inherit_root_assignee_when_unrouted(kanban_ho
         "fanout": True,
         "rationale": "test split",
         "tasks": [
-            {"title": "research", "body": "look it up", "assignee": "made_up", "parents": []},
-            {"title": "build", "body": "code it", "assignee": None, "parents": [0]},
+            {"title": "research", "body": ACCEPTANCE, "assignee": "made_up", "parents": []},
+            {"title": "build", "body": ACCEPTANCE, "assignee": None, "parents": [0]},
         ],
     })
 
@@ -170,8 +213,8 @@ def test_decompose_explicit_default_assignee_wins_over_root_assignee(kanban_home
         "fanout": True,
         "rationale": "test split",
         "tasks": [
-            {"title": "research", "body": "look it up", "assignee": "made_up", "parents": []},
-            {"title": "build", "body": "code it", "assignee": None, "parents": [0]},
+            {"title": "research", "body": ACCEPTANCE, "assignee": "made_up", "parents": []},
+            {"title": "build", "body": ACCEPTANCE, "assignee": None, "parents": [0]},
         ],
     })
 
@@ -204,7 +247,7 @@ def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
         "fanout": False,
         "rationale": "single unit",
         "title": "Tightened title",
-        "body": "Route to fallback.",
+        "body": "Route to fallback.\n" + ACCEPTANCE,
         "assignee": "made_up",
     })
 

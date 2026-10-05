@@ -19,6 +19,9 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_specify as spec
 
+ACCEPTANCE = ("\n**Acceptance criteria**\nObservable result: A local receipt lists the checked result."
+              "\nFalsifier: The local receipt is absent or lists a failed check.")
+
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
@@ -75,7 +78,7 @@ def test_specify_task_happy_path(kanban_home):
 
     content = jsonlib.dumps({
         "title": "Refined rough",
-        "body": "**Goal**\nA concrete goal.",
+        "body": "**Goal**\nA concrete goal." + ACCEPTANCE,
     })
     p, _ = _patch_aux_client(content)
     with p:
@@ -91,6 +94,42 @@ def test_specify_task_happy_path(kanban_home):
     assert task.status == "ready"
     assert task.title == "Refined rough"
     assert "**Goal**" in (task.body or "")
+    assert task is not None
+    assert spec._acceptance_problem(task.body) == ""
+
+
+def test_specify_refuses_unobservable_acceptance(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Investigate a report", triage=True)
+    content = jsonlib.dumps({"title": "Investigate", "body":
+        "**Goal**\nInvestigate.\n**Acceptance criteria**\n- Make it work."})
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid, author="ace")
+    assert not outcome.ok
+    assert "acceptance" in outcome.reason.lower()
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "triage"
+
+
+def test_specify_honors_explicit_refusal(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Decide later", triage=True)
+    p, _ = _patch_aux_client(jsonlib.dumps({"refused": True, "reason": "No source specified"}))
+    with p:
+        outcome = spec.specify_task(tid, author="ace")
+    assert not outcome.ok and "No source specified" in outcome.reason
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "triage"
+
+
+def test_research_citation_check_is_an_observable_falsifier():
+    body = ("**Acceptance criteria**\nObservable result: Three claims cite retrievable sources."
+            "\nFalsifier: Any cited source does not support its associated claim.")
+    assert spec._acceptance_problem(body) == ""
+    assert spec._acceptance_problem("**Acceptance criteria**\nObservable result: Make it work.\nFalsifier: TBD")
 
 
 
@@ -119,7 +158,7 @@ def test_cli_specify_tenant_filter(kanban_home, capsys):
             conn, title="inside", triage=True, tenant="proj-a",
         )
 
-    content = jsonlib.dumps({"title": "spec", "body": "body"})
+    content = jsonlib.dumps({"title": "spec", "body": ACCEPTANCE})
     p, _ = _patch_aux_client(content)
     with p:
         rc = _run_cli("specify", "--all", "--tenant", "proj-a", "--json")
@@ -136,6 +175,9 @@ def test_cli_specify_tenant_filter(kanban_home, capsys):
     with kbc.connect() as conn:
         assert kb.get_task(conn, outside).status == "triage"
         # The inside task was promoted.
-        assert kb.get_task(conn, inside).status in {"todo", "ready"}
+        produced = kb.get_task(conn, inside)
+        assert produced is not None
+        assert produced.status in {"todo", "ready"}
+        assert spec._acceptance_problem(produced.body) == ""
 
 

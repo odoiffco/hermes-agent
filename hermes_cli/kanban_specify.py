@@ -7,7 +7,7 @@ tightened title + concrete body for a Triage task, then flips it
 Mirrors ``hermes_cli/goals.py``: same aux-client pattern, same "empty config
 => skip, don't crash" tolerance. One shot, no retry loop. JSON mode is not
 requested (works on providers without it); the parse is lenient and falls
-back to "whole reply is the body" so a malformed reply never strands a task.
+rejects replies without observable acceptance so incomplete work stays in triage.
 """
 
 from __future__ import annotations
@@ -47,6 +47,11 @@ heading, in this order:
   **Goal** — one sentence, user-facing outcome.
   **Approach** — 2-5 bullets on how a worker should tackle it.
   **Acceptance criteria** — checklist of concrete, verifiable conditions.
+      Include an "Observable result:" line stating exactly what counts as done
+      and a "Falsifier:" line stating the observation that proves it is NOT done
+      (e.g. a command and its red/green output, a count, or a checked receipt).
+      Choose evidence appropriate to this task: research can require citation
+      checks; local-only work can require local receipts, not remote CI.
   **Out of scope** — short list of things NOT to touch (omit if nothing
       obvious; never invent scope creep).
 
@@ -56,6 +61,9 @@ Rules:
   - If the original idea is already detailed, preserve its substance and
     just reformat into the sections above.
   - Never add invented requirements the user didn't hint at.
+  - Acceptance is mandatory. If you cannot state an observable result AND a
+    concrete falsifier from the given information, do not invent one or emit
+    a dispatchable card. Return {"refused": true, "reason": "<what is missing>"}.
   - No preamble, no closing remarks, no code fences around the JSON.
   - Output only the JSON object and nothing else.
 """
@@ -114,6 +122,22 @@ def _title_body(parsed: dict) -> tuple[Optional[str], Optional[str]]:
     either None when missing/blank."""
     title = _nonblank(parsed.get("title"))
     return (title.strip() if title else None), _nonblank(parsed.get("body"))
+
+
+def _acceptance_problem(body: Optional[str]) -> str:
+    """Reject missing evidence fields before a generated card can leave triage.
+
+    This checks the contract's shape, not the truth of a model's evidence claim;
+    reviewers still judge whether the proposed observation actually falsifies it.
+    """
+    section = re.search(r"(?im)^\s*\*\*Acceptance criteria\*\*\s*$([\s\S]*?)(?=^\s*\*\*[^\n]+\*\*|\Z)", body or "")
+    if not section:
+        return "acceptance criteria section is missing"
+    for label in ("Observable result", "Falsifier"):
+        match = re.search(rf"(?im)^\s*(?:[-*]\s*)?(?:\[[ xX]\]\s*)?{label}:\s*(\S[^\n]*)$", section.group(1))
+        if not match or match.group(1).strip().lower().rstrip(".") in {"tbd", "unknown", "make it work", "works", "n/a", "none"}:
+            return f"acceptance criteria missing concrete {label.lower()}"
+    return ""
 
 
 def _profile_author(default: str = "specifier") -> str:
@@ -211,14 +235,16 @@ def specify_task(
 
     parsed = _extract_json_blob(raw)
     if parsed is None:
-        # Whole reply becomes the body; the user can edit afterward.
-        if not raw:
-            return SpecifyOutcome(task_id, False, "LLM returned an empty response")
-        new_title, new_body = None, raw
+        return SpecifyOutcome(task_id, False, "LLM returned malformed JSON; acceptance not verified")
     else:
+        if parsed.get("refused"):
+            return SpecifyOutcome(task_id, False, f"acceptance cannot be stated: {str(parsed.get('reason') or 'unspecified')[:300]}")
         new_title, new_body = _title_body(parsed)
         if new_body is None and new_title is None:
             return SpecifyOutcome(task_id, False, "LLM response missing title and body")
+    problem = _acceptance_problem(new_body)
+    if problem:
+        return SpecifyOutcome(task_id, False, problem)
 
     with kbc.connect_closing() as conn:
         ok = kb.specify_triage_task(

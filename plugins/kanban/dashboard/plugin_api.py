@@ -172,7 +172,8 @@ _CARD_SUMMARY_PREVIEW_CHARS = 200
 
 
 def _task_dict(task: kanban_db.Task, *, latest_summary: Optional[str] = None,
-               current_run_started_at: Optional[int] = None) -> dict[str, Any]:
+               current_run_started_at: Optional[int] = None,
+               result_state: Optional[str] = None) -> dict[str, Any]:
     d = asdict(task)
     # Derived age metrics so the UI can colour stale cards without client deltas.
     try:
@@ -181,6 +182,7 @@ def _task_dict(task: kanban_db.Task, *, latest_summary: Optional[str] = None,
         d["age"] = {"created_age_seconds": None, "started_age_seconds": None, "time_to_complete_seconds": None}
     # Latest non-null run summary (workers hand off via ``task_runs.summary``, not ``tasks.result``).
     d["latest_summary"] = latest_summary
+    d["result_state"] = result_state
     # Start of the current task_runs row (``tasks.started_at`` is the FIRST-EVER
     # start; after a retry the run clock must tick from the fresh run).
     d["current_run_started_at"] = current_run_started_at
@@ -313,13 +315,15 @@ def get_board(
         # One window-function query for latest summaries (avoids N+1); cards get a
         # truncated preview, the full text comes from /tasks/:id.
         summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+        states = kanban_db.result_states(conn, tasks)
         # One query for the active run's start per card (avoids N+1); the run
         # clock ticks from this, not the task's first-ever start.
         run_start_map = kanban_db.current_run_started_ats(conn, [t.id for t in tasks])
         for t in tasks:
             full = summary_map.get(t.id)
             d = _task_dict(t, latest_summary=(full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None),
-                           current_run_started_at=run_start_map.get(t.id))
+                           current_run_started_at=run_start_map.get(t.id),
+                           result_state=states[t.id])
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
@@ -379,7 +383,8 @@ def get_task(
         # Drawer returns the FULL summary (cards on /board carry a 200-char preview).
         task_d = _task_dict(
             task, latest_summary=kanban_db.latest_summary(conn, task_id),
-            current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id))
+            current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id),
+            result_state=kanban_db.result_state(conn, task))
         links = _links_for(conn, task_id)
         child_summaries = kanban_db.latest_summaries(conn, links["children"])
         children = filter(None, (kanban_db.get_task(conn, cid) for cid in links["children"]))
@@ -392,7 +397,8 @@ def get_task(
             "links": links,
             "link_tasks": _link_tasks(conn, links),
             "child_results": [
-                {"id": c.id, "title": c.title, "status": c.status, "latest_summary": child_summaries.get(c.id), "result": c.result}
+                {"id": c.id, "title": c.title, "status": c.status, "latest_summary": child_summaries.get(c.id),
+                  "result": c.result, "result_state": kanban_db._outcome_state(c.status, c.completed_at, c.result, child_summaries.get(c.id))}
                 for c in children],
             "runs": [asdict(r) for r in kanban_db.list_runs(conn, task_id, state_type=run_state_type, state_name=run_state_name)]}
 
@@ -427,7 +433,8 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
         task_id = kanban_db.create_task(conn, created_by="dashboard", board=board, **payload.model_dump())
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(
-            task, current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id)
+            task, current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id),
+            result_state=kanban_db.result_state(conn, task)
         ) if task else None}
         # Dispatcher-presence warning so the UI can banner a ready+assigned task that would
         # otherwise sit idle (no gateway / dispatch_in_gateway=false); triage/todo are expected
@@ -700,7 +707,8 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             _patch_title_body(conn, task_id, payload, board)
         updated = kanban_db.get_task(conn, task_id)
         return {"task": _task_dict(
-            updated, current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id)
+            updated, current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id),
+            result_state=kanban_db.result_state(conn, updated)
         ) if updated else None}
 
 

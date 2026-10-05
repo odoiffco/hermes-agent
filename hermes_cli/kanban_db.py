@@ -3013,6 +3013,7 @@ def _completed_event_payload(
     # ignored the config (#18994).
     payload: dict = {
         "result_len": len(result) if result else 0,
+        "result_state": _outcome_state("done", None, result, event_summary),
         "summary": _first_line(event_summary, 400) or None,
     }
     if verified_cards:
@@ -4222,12 +4223,18 @@ def _ctx_parent_results(lines: list[str], conn: sqlite3.Connection, task_id: str
         done_ts = run.ended_at if run is not None and run.ended_at else (pt.completed_at or None)
         age = _relative_age(done_ts, now)
         lines.append(f"### {pid}" + (f" (completed {age})" if age else ""))
+        state = result_state(conn, pt)
         if run is not None and run.summary and run.summary.strip():
             lines.append(_ctx_cap(run.summary))
+            if state == "summary_only":
+                lines.append("_(outcome state: summary_only — tasks.result is empty; evidence is this summary, not a verified row result)_")
+        elif state == "placeholder":
+            lines.append("[legacy auto-placeholder — not a verified outcome]")
+            lines.append(_ctx_cap(pt.result))
         elif pt.result:
             lines.append(_ctx_cap(pt.result))
         else:
-            lines.append("(no result recorded)")
+            lines.append("(no outcome recorded — verify deliverables before trusting this closure)")
         meta_line = _ctx_metadata_line(run.metadata) if run is not None else None
         if meta_line:
             lines.append(meta_line)
@@ -4511,6 +4518,41 @@ def latest_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
         "ORDER BY started_at DESC, id DESC LIMIT 1", (task_id,),
     ).fetchone()
     return Run.from_row(row) if row else None
+
+
+_LEGACY_PLACEHOLDER_RESULTS = frozenset({
+    "Completed without a stated result or evidence; verify deliverables.",
+    "Review approved without additional evidence.",
+})
+RESULT_STATES = ("no_outcome_recorded", "placeholder", "verified_result", "summary_only")
+
+
+def _outcome_state(status: str, completed_at: Optional[int], result: Optional[str],
+                   summary: Optional[str]) -> Optional[str]:
+    if status != "done" and not (status == "archived" and completed_at):
+        return None
+    text = (result or "").strip()
+    if text in _LEGACY_PLACEHOLDER_RESULTS:
+        return "placeholder"
+    if text:
+        return "verified_result"
+    return "summary_only" if summary and summary.strip() else "no_outcome_recorded"
+
+
+def result_state(conn: sqlite3.Connection, task: Task) -> Optional[str]:
+    """Derived state of a completed task's outcome record (no row mutation)."""
+    if task.status != "done" and not (task.status == "archived" and task.completed_at):
+        return None
+    if (task.result or "").strip():
+        return _outcome_state(task.status, task.completed_at, task.result, None)
+    return _outcome_state(task.status, task.completed_at, task.result, latest_summary(conn, task.id))
+
+
+def result_states(conn: sqlite3.Connection, tasks: Iterable[Task]) -> dict[str, Optional[str]]:
+    """Batch classifier: one summary query for all potentially completed tasks."""
+    rows = list(tasks)
+    summaries = latest_summaries(conn, [t.id for t in rows if t.status == "done" or (t.status == "archived" and t.completed_at)])
+    return {t.id: _outcome_state(t.status, t.completed_at, t.result, summaries.get(t.id)) for t in rows}
 
 
 def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:

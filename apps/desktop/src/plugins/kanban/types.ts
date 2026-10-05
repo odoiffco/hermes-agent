@@ -116,6 +116,7 @@ export interface KanbanLinkTask {
  *  `started_at`/`worker_pid`/`last_heartbeat_at` are inherited — they live on
  *  KanbanTask now that the board's liveness arc reads them. */
 export interface KanbanTaskFull extends KanbanTask {
+  result_state?: null | 'no_outcome_recorded' | 'placeholder' | 'verified_result' | 'summary_only'
   result?: null | string
   created_by?: null | string
   /** Per-task worker overrides. Null/absent = the assigned profile's own

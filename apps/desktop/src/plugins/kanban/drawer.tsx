@@ -1076,8 +1076,14 @@ export function TaskDrawer({
                     onSave={body => void mutate(() => patchTask(task.id, { body }))()}
                   />
 
+                  {task.status === 'done' && task.result_state && (
+                    <span role="status" className="inline-flex rounded border border-border px-2 py-0.5 text-xs text-muted-foreground">{k.outcome}: {k.outcomeLabels[task.result_state]}</span>
+                  )}
+                  {task.status === 'done' && task.result_state === 'no_outcome_recorded' && (
+                    <div role="alert">{k.noOutcomeWarning}</div>
+                  )}
                   {task.result && (
-                    <Section label={k.result}>
+                    <Section label={task.result_state === 'placeholder' ? k.placeholderWarning : k.result}>
                       <TaskMarkdown text={task.result} />
                     </Section>
                   )}

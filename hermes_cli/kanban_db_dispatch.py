@@ -1034,6 +1034,8 @@ class _DeadWorker:
     protocol_violation: bool = False
     rate_limited: bool = False
     terminal_provider: bool = False
+    secret_hydration: bool = False
+    secret_name: Optional[str] = None
     """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
     credential/model — trips the breaker on this first occurrence."""
 
@@ -1041,11 +1043,14 @@ class _DeadWorker:
     def run_outcome(self) -> str:
         # A rate-limited requeue is recorded as ``rate_limited`` so board history
         # doesn't show a phantom crash for a quota wall.
+        if self.secret_hydration:
+            return "secret_hydration_unavailable"
         return "rate_limited" if self.rate_limited else "crashed"
 
 
 def _classify_dead_worker(
     pid: int, claimer: Optional[str], *, task_id: Optional[str] = None, board: Optional[str] = None,
+    assignee: Optional[str] = None,
 ) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping.
 
@@ -1056,6 +1061,22 @@ def _classify_dead_worker(
     dead = _classify_dead_worker_exit(pid, claimer, task_id=task_id, board=board)
     if task_id and not dead.rate_limited:
         worker_output = _worker_final_output(task_id, board=board)
+        if dead.kind not in ("clean_exit", "rate_limited"):
+            from hermes_cli.kanban_secret_hydration import failed_reference
+            reference = failed_reference(worker_output)
+            if reference is not None:
+                dead.secret_hydration = True
+                dead.event_kind = "secret_hydration_unavailable"
+                dead.error_text = "blocked: secret hydration unavailable"
+                dead.event_payload["infrastructure"] = True
+                dead.event_payload["condition"] = "secret_hydration_unavailable"
+                # Find the profile's configured reference, never persist its path or value.
+                from hermes_cli.kanban_secret_hydration import configured_secret_name
+                if assignee:
+                    dead.secret_name = configured_secret_name(assignee, reference)
+                    if dead.secret_name:
+                        dead.event_payload["secret_name"] = dead.secret_name
+                worker_output = ""  # no provider diagnostic or vault path in the card
         if worker_output:
             dead.error_text += f" Worker's last output: {worker_output!r}"
             dead.event_payload["worker_output"] = worker_output
@@ -1166,15 +1187,21 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 continue
 
             pid = int(row["worker_pid"])
-            dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
+            dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board,
+                                         assignee=row["assignee"])
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
+            if dead.secret_hydration:
+                from hermes_cli.kanban_secret_hydration import INITIAL_DELAY
+                dead.event_payload.update(first_seen=int(time.time()), next_probe_at=int(time.time()) + INITIAL_DELAY,
+                                          probes=0)
+            target_status = "blocked" if dead.secret_hydration else retry_status
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
-                (retry_status, row["id"], pid, row["claim_lock"]),
+                (target_status, row["id"], pid, row["claim_lock"]),
             )
             if cur.rowcount != 1:
                 continue
@@ -1195,7 +1222,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 "outcome": dead.run_outcome,
                 "retry_status": retry_status,
             })
-            if dead.rate_limited or dead.protocol_violation:
+            if dead.rate_limited or dead.protocol_violation or dead.secret_hydration:
                 # Stamp last_failure_error WITHOUT touching ``consecutive_failures``:
                 # a rate-limited requeue must show ``check_respawn_guard`` a quota
                 # blocker; a below-budget protocol violation never reaches
@@ -1205,6 +1232,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                     "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
                     (dead.error_text[:500], row["id"]),
                 )
+            if dead.secret_hydration:
+                continue  # infrastructure, not a crash or a work failure
             if dead.rate_limited:
                 sweep.rate_limited.append(row["id"])
             else:
@@ -2180,6 +2209,81 @@ def _apply_default_assignee(
     return True
 
 
+def _resume_secret_hydration(conn: sqlite3.Connection) -> None:
+    """Probe due infrastructure holds once, without opening a worker run.
+
+    5m, 10m, 20m ... 8h, capped at 24h total. A persistent failure stays
+    blocked and gets a terminal infrastructure event; no work budget is spent.
+    """
+    from hermes_cli.kanban_secret_hydration import MAX_AGE, next_delay, probe
+
+    now = int(time.time())
+    rows = conn.execute(
+        "SELECT id, assignee FROM tasks WHERE status = 'blocked' AND claim_lock IS NULL",
+    ).fetchall()
+    # A herd of cards sharing a throttled provider must not multiply reads in
+    # one dispatcher tick. Other due cards remain parked for the next tick.
+    probed_profiles: set[str] = set()
+    for row in rows:
+        latest = conn.execute(
+            "SELECT id, payload FROM task_events WHERE task_id = ? "
+            "AND kind = 'secret_hydration_unavailable' ORDER BY id DESC LIMIT 1",
+            (row["id"],),
+        ).fetchone()
+        if not latest:
+            continue
+        unblocked = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'unblocked' "
+            "AND id > ? LIMIT 1", (row["id"], latest["id"]),
+        ).fetchone()
+        if unblocked:
+            continue
+        data = _kb._json_dict(latest["payload"])
+        if data.get("terminal") or now < int(data.get("next_probe_at") or 0):
+            continue
+        if row["assignee"] in probed_profiles:
+            continue
+        if data.get("secret_name") and row["assignee"]:
+            probed_profiles.add(row["assignee"])
+        recovered = bool(data.get("secret_name") and row["assignee"] and
+                         probe(row["assignee"], data["secret_name"]))
+        with _kb.write_txn(conn):
+            if recovered:
+                resume_status = data.get("retry_status")
+                if resume_status not in ("ready", "review"):
+                    resume_status = "ready"
+                updated = conn.execute(
+                    "UPDATE tasks SET status = ?, last_failure_error = NULL "
+                    "WHERE id = ? AND status = 'blocked' AND claim_lock IS NULL",
+                    (resume_status, row["id"]),
+                )
+                if updated.rowcount:
+                    _kb._append_event(conn, row["id"], "unblocked",
+                                      {"retry_status": resume_status, "infrastructure": True,
+                                       "reason": "secret hydration recovered"})
+                    _kb._append_event(conn, row["id"], "secret_hydration_recovered",
+                                      {"retry_status": resume_status})
+            else:
+                age = now - int(data.get("first_seen") or now)
+                if age >= MAX_AGE:
+                    data["terminal"] = True
+                    conn.execute(
+                        "UPDATE tasks SET last_failure_error = ? WHERE id = ? AND status = 'blocked'",
+                        ("blocked: secret hydration unavailable (24h probe window exhausted; "
+                         "operator action required)", row["id"]),
+                    )
+                else:
+                    attempts = int(data.get("probes") or 0) + 1
+                    data.update(probes=attempts,
+                                next_probe_at=min(now + next_delay(attempts),
+                                                  int(data["first_seen"]) + MAX_AGE))
+                _kb._append_event(conn, row["id"], "secret_hydration_unavailable", data)
+                if data.get("terminal"):
+                    _kb._append_event(conn, row["id"], "secret_hydration_escalated",
+                                      {"reason": "24h probe window exhausted; operator action required",
+                                       "infrastructure": True})
+
+
 def _run_reclaim_phase(
     conn: sqlite3.Connection,
     result: DispatchResult,
@@ -2197,6 +2301,7 @@ def _run_reclaim_phase(
         result.reconciled_orphans = reconcile_orphaned_running(conn)
     result.stale = detect_stale_running(conn, stale_timeout_seconds=stale_timeout_seconds)
     result.crashed = detect_crashed_workers(conn, board=board)
+    _resume_secret_hydration(conn)
     # Side-channel attributes (see detect_crashed_workers); rate-limited tasks
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))

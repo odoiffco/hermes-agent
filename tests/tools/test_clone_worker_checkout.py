@@ -27,17 +27,17 @@ def source(tmp_path):
 
 
 @pytest.mark.parametrize("branch,subdir", [("main", "worker"), ("other-base", "nested/another-worker")])
-def test_borrows_objects_for_any_base_and_destination(source, tmp_path, branch, subdir):
+def test_shallow_independent_objects_for_any_base_and_destination(source, tmp_path, branch, subdir):
     destination = tmp_path / subdir
     destination.parent.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(["bash", str(SCRIPT), str(source), branch, str(destination)],
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert git("branch", "--show-current", cwd=destination) == branch
-    alternates = (destination / ".git/objects/info/alternates").read_text().strip()
-    assert Path(alternates).resolve() == (source / ".git/objects").resolve()
+    assert git("rev-parse", "--is-shallow-repository", cwd=destination) == "true"
+    assert not (destination / ".git/objects/info/alternates").exists()
     assert (destination / "file.txt").read_text() == "source\n"
-    assert not list((destination / ".git/objects/pack").glob("*.pack"))
+    assert len(list((destination / ".git/objects/pack").glob("*.pack"))) == 1
 
 
 def test_refuses_existing_destination_and_missing_source(source, tmp_path):

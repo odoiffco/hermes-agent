@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cheap local clone of a served checkout. Keep the source object store intact while this clone lives.
+# Self-contained shallow clone of one local branch; do not copy the served object database.
 set -euo pipefail
 
 if [ "$#" -ne 3 ]; then
@@ -23,11 +23,15 @@ if [ "$(git -C "$source_checkout" config --bool --get remote.origin.promisor || 
     exit 2
 fi
 
-# --reference with a local source still hardlinks every pack on this host (91 GB in du).
-# --shared creates alternates instead; the private commits made here stay in this clone.
-git clone --shared --single-branch --branch "$base_branch" -- "$source_checkout" "$destination"
-if [ ! -s "$destination/.git/objects/info/alternates" ]; then
-    printf 'Clone did not borrow objects; inspect before continuing: %s\n' "$destination" >&2
+# file:// forces Git's transfer protocol, so --depth really bounds local objects.
+# It copies only the selected branch tip; this clone cannot traverse older history.
+git clone --depth=1 --single-branch --branch "$base_branch" -- "file://$(cd "$source_checkout" && pwd -P)" "$destination"
+if [ "$(git -C "$destination" rev-parse --is-shallow-repository)" != true ]; then
+    printf 'Clone is not shallow; inspect before continuing: %s\n' "$destination" >&2
     exit 1
 fi
-printf 'Borrowed-object checkout: %s (base %s)\n' "$destination" "$base_branch"
+if [ -e "$destination/.git/objects/info/alternates" ]; then
+    printf 'Clone unexpectedly borrows objects: %s\n' "$destination" >&2
+    exit 1
+fi
+printf 'Shallow worker checkout: %s (base %s)\n' "$destination" "$base_branch"

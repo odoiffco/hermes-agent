@@ -562,7 +562,7 @@ def _block_message(operation: str, root: Path) -> str:
         f"Use a separate worktree or the bounded worker clone wrapper on real disk: "
         f"`bash {shlex.quote(str(root / 'scripts/clone_worker_checkout.sh'))} "
         f"{shlex.quote(str(root))} main {shlex.quote(str(scratch / '<task>'))}` — "
-        "the wrapper verifies that the clone borrows the source objects. Avoid /tmp for "  # no-tmp: ok — guidance telling the model to AVOID /tmp
+        "the wrapper verifies that the clone is shallow and independent. Avoid /tmp for "  # no-tmp: ok — guidance telling the model to AVOID /tmp
         "clones that install node/python deps: /tmp is usually RAM-backed tmpfs and a few "  # no-tmp: ok — guidance telling the model to AVOID /tmp
         "dependency installs can fill it and ENOSPC other work. Delete the clone when the branch "
         "is pushed. To change this checkout, stop Hermes, run the command externally, then restart "

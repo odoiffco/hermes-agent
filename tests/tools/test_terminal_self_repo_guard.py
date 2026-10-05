@@ -71,6 +71,13 @@ class TestSelfRepoGuardWiring:
         assert str(repo) in result["error"]
         env.execute.assert_not_called()
 
+    def test_refusal_names_mechanical_clone_wrapper(self, repo, monkeypatch):
+        config = _make_env_config(cwd=str(repo))
+        result, env = _run("git checkout main", config, monkeypatch, repo)
+        assert "clone_worker_checkout.sh" in result["error"]
+        assert " main " in result["error"]
+        env.execute.assert_not_called()
+
     def test_force_cannot_bypass(self, repo, monkeypatch):
         config = _make_env_config(cwd=str(repo))
         result, env = _run(

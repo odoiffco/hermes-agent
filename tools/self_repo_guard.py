@@ -559,8 +559,10 @@ def _block_message(operation: str, root: Path) -> str:
     return (
         f"Blocked: `{operation}` would rewrite Hermes's live source checkout "
         f"({root}) and can mix module versions in this running process. "
-        f"Use a separate worktree or a shared clone on real disk, e.g. "
-        f"`git clone --shared {root} {scratch}/<task>` — avoid /tmp for "  # no-tmp: ok — guidance telling the model to AVOID /tmp
+        f"Use a separate worktree or the bounded worker clone wrapper on real disk: "
+        f"`bash {shlex.quote(str(root / 'scripts/clone_worker_checkout.sh'))} "
+        f"{shlex.quote(str(root))} main {shlex.quote(str(scratch / '<task>'))}` — "
+        "the wrapper verifies that the clone borrows the source objects. Avoid /tmp for "  # no-tmp: ok — guidance telling the model to AVOID /tmp
         "clones that install node/python deps: /tmp is usually RAM-backed tmpfs and a few "  # no-tmp: ok — guidance telling the model to AVOID /tmp
         "dependency installs can fill it and ENOSPC other work. Delete the clone when the branch "
         "is pushed. To change this checkout, stop Hermes, run the command externally, then restart "

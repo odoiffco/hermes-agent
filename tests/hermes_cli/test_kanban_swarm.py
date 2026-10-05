@@ -10,6 +10,78 @@ from hermes_cli.kanban_swarm import (
 )
 
 
+def worker(*, profile, title, body):
+    return SwarmWorkerSpec(
+        profile=profile, title=title, body=body,
+        acceptance=f"The {title} handoff supplies the requested result with evidence.",
+        falsifier=f"The {title} handoff omits the result or supporting evidence.",
+    )
+
+
+def test_swarm_refuses_unspecified_acceptance_without_creating_cards(tmp_path):
+    conn = kbc.connect(tmp_path / "kanban.db")
+    try:
+        for spec, field in [
+            (SwarmWorkerSpec("researcher", "Count", "Count records"), "acceptance"),
+            (SwarmWorkerSpec("researcher", "Count", "Count records", acceptance="Seven records"), "falsifier"),
+            (SwarmWorkerSpec("researcher", "Count", "Count records", acceptance="Seven records", falsifier=" "), "falsifier"),
+        ]:
+            with pytest.raises(ValueError, match=field):
+                create_swarm(conn, goal="Count records", workers=[spec],
+                             verifier_assignee="reviewer", synthesizer_assignee="writer")
+            assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_swarm_cli_refuses_missing_or_blank_criteria(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from hermes_cli import kanban as cli
+
+    @contextmanager
+    def scratch_board():
+        conn = kbc.connect(tmp_path / "cli.db")
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    monkeypatch.setattr(cli.kbc, "connect_closing", scratch_board)
+    base = 'swarm "Count citations" --worker "researcher:Citations" --verifier reviewer --synthesizer writer'
+    assert "one --acceptance" in cli.run_slash(base)
+    assert "falsifier is required" in cli.run_slash(base + ' --acceptance "three citations" --falsifier " "')
+    with kbc.connect(tmp_path / "cli.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+    output = cli.run_slash(base + ' --acceptance "three citations" --falsifier "fewer than three"')
+    assert "error:" not in output
+    with kbc.connect(tmp_path / "cli.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 4
+
+
+def test_non_code_worker_and_synthesizer_have_falsifiable_outcomes(tmp_path):
+    conn = kbc.connect(tmp_path / "kanban.db")
+    try:
+        created = create_swarm(
+            conn, goal="Produce a cited evidence memo",
+            workers=[SwarmWorkerSpec(
+                "researcher", "Cited evidence", "Collect cited sources",
+                acceptance="Three independently cited primary sources in the handoff.",
+                falsifier="Fewer than three distinct primary citations are present.",
+            )], verifier_assignee="reviewer", synthesizer_assignee="writer",
+        )
+        cards = [kb.get_task(conn, tid) for tid in (
+            created.root_id, *created.worker_ids, created.verifier_id, created.synthesizer_id,
+        )]
+        bodies = [card.body if card is not None else "" for card in cards]
+        assert all("Observable result:" in (body or "") and "Falsifier:" in (body or "")
+                   for body in bodies)
+        assert "Fewer than three distinct primary citations" in (bodies[1] or "")
+        assert "traces each substantive conclusion" in (bodies[-1] or "")
+        assert "cannot be traced" in (bodies[-1] or "")
+    finally:
+        conn.close()
+
+
 def test_create_swarm_builds_parallel_workers_verifier_and_synthesizer(tmp_path):
     conn = kbc.connect(tmp_path / "kanban.db")
     try:
@@ -17,8 +89,8 @@ def test_create_swarm_builds_parallel_workers_verifier_and_synthesizer(tmp_path)
             conn,
             goal="Map the target market and produce a decision memo.",
             workers=[
-                SwarmWorkerSpec(profile="researcher-a", title="Market scan", body="Find competitors"),
-                SwarmWorkerSpec(profile="researcher-b", title="Customer scan", body="Find customer pains"),
+                worker(profile="researcher-a", title="Market scan", body="Find competitors"),
+                worker(profile="researcher-b", title="Customer scan", body="Find customer pains"),
             ],
             verifier_assignee="reviewer",
             synthesizer_assignee="writer",
@@ -79,8 +151,8 @@ def test_create_swarm_graph_is_atomic_and_rolls_back_partial_build(
                 writer,
                 goal="Build atomically",
                 workers=[
-                    SwarmWorkerSpec(profile="worker-a", title="A", body="A"),
-                    SwarmWorkerSpec(profile="worker-b", title="B", body="B"),
+                    worker(profile="worker-a", title="A", body="A"),
+                    worker(profile="worker-b", title="B", body="B"),
                 ],
                 verifier_assignee="reviewer",
                 synthesizer_assignee="writer",
@@ -100,7 +172,7 @@ def test_create_swarm_graph_is_atomic_and_rolls_back_partial_build(
                 writer,
                 goal="Fail activation atomically",
                 workers=[
-                    SwarmWorkerSpec(profile="worker-a", title="A", body="A"),
+                    worker(profile="worker-a", title="A", body="A"),
                 ],
                 verifier_assignee="reviewer",
                 synthesizer_assignee="writer",
@@ -120,7 +192,7 @@ def test_create_swarm_graph_is_atomic_and_rolls_back_partial_build(
         create_swarm(
             writer,
             goal="Commit before lifecycle hook",
-            workers=[SwarmWorkerSpec(profile="worker-a", title="A", body="A")],
+            workers=[worker(profile="worker-a", title="A", body="A")],
             verifier_assignee="reviewer",
             synthesizer_assignee="writer",
         )
@@ -184,7 +256,7 @@ def test_swarm_blackboard_merges_structured_updates(tmp_path):
         created = create_swarm(
             conn,
             goal="Collect evidence.",
-            workers=[SwarmWorkerSpec(profile="researcher", title="Evidence", body="Find proof")],
+            workers=[worker(profile="researcher", title="Evidence", body="Find proof")],
             verifier_assignee="reviewer",
             synthesizer_assignee="writer",
         )
@@ -219,8 +291,8 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
             conn,
             goal="Research two branches then verify and synthesize.",
             workers=[
-                SwarmWorkerSpec(profile="a", title="Branch A", body="A"),
-                SwarmWorkerSpec(profile="b", title="Branch B", body="B"),
+                worker(profile="a", title="Branch A", body="A"),
+                worker(profile="b", title="Branch B", body="B"),
             ],
             verifier_assignee="reviewer",
             synthesizer_assignee="writer",

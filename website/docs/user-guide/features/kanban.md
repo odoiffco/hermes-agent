@@ -1063,9 +1063,16 @@ All of these are gated by the same dashboard plugin auth as the rest of the kanb
 
 ```bash
 hermes kanban swarm "Design a multi-region failover plan" \
-  --workers researcher,architect,sre \
+  --worker "researcher:Find regional failure reports" \
+  --acceptance "Handoff cites three regional outage reports" \
+  --falsifier "Fewer than three distinct reports are cited" \
+  --worker "architect:Design recovery topology" \
+  --acceptance "Handoff includes a topology and recovery sequence for each region" \
+  --falsifier "A region lacks a recovery sequence" \
   --verifier reviewer --synthesizer writer
 ```
+
+Provide one `--acceptance` and one `--falsifier` per `--worker`, in the same order; missing or blank criteria refuse the entire graph before any cards are created. Acceptance may be a count or a citation, not just a code test. The root, verifier, and synthesizer get role-specific observable results and falsifiers automatically; the synthesizer must trace its conclusions to verified worker outputs.
 
 The resulting graph is committed atomically: dispatchers and dashboard readers see either no new swarm or the complete topology, never a partially linked root/worker/verifier graph. It then dispatches normally — workers run in parallel, the verifier wakes after they all finish, and the synthesizer wakes after the verifier marks the work clean.
 

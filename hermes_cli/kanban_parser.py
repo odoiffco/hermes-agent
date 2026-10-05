@@ -309,6 +309,9 @@ _SPECS = [
         _arg("--title", help="Replace the task title"),
         _arg("--body", help="Replace the task body"),
         _arg("--priority", type=int, help="Replace the task priority"),
+        _arg("--max-runtime",
+             help="Set the per-task runtime cap (300, 90s, 30m, 2h, 1d), or "
+                  "'none' to clear it. Takes effect on the active attempt immediately."),
         _arg("--result", help="Backfilled task result text for a done task"),
         *_STEP_HANDOFF,
     ], help="Edit task fields or recovery fields on an already-completed task"),

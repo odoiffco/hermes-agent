@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ import pytest
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
@@ -98,6 +100,74 @@ def test_kanban_edit_updates_documented_task_fields(kanban_home):
         events = kb.list_events(conn, task_id)
     assert (task.title, task.body, task.priority) == ("new title", "new body", 70)
     assert any(event.kind == "reprioritized" for event in events)
+
+
+def test_kanban_edit_sets_changes_and_clears_runtime_bound(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="runtime policy")
+
+    assert kc.run_slash(f"edit {task_id} --max-runtime 90s") == f"Edited {task_id}"
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None and task.max_runtime_seconds == 90
+
+    assert kc.run_slash(f"edit {task_id} --max-runtime 2m") == f"Edited {task_id}"
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None and task.max_runtime_seconds == 120
+        events = kb.list_events(conn, task_id)
+    assert any(
+        event.kind == "edited"
+        and event.payload == {"fields": ["max_runtime_seconds"]}
+        for event in events
+    )
+
+    assert kc.run_slash(f"edit {task_id} --max-runtime none") == f"Edited {task_id}"
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None and task.max_runtime_seconds is None
+
+
+def test_kanban_edit_rejects_non_positive_runtime_bound(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="runtime policy")
+
+    result = kc.run_slash(f"edit {task_id} --max-runtime 0")
+
+    assert "--max-runtime must be greater than zero" in result
+
+
+def test_kanban_create_warns_when_runtime_bound_is_omitted(
+    kanban_home, monkeypatch,
+):
+    monkeypatch.setattr(kc, "_check_dispatcher_presence", lambda: (True, None))
+
+    result = kc.run_slash("create 'unbounded task'")
+
+    assert "no runtime bound" in result.lower()
+
+
+def test_runtime_bound_added_to_running_task_is_enforced(kanban_home, monkeypatch):
+    monkeypatch.setattr(kbd, "_worker_alive", lambda pid, fingerprint: False)
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="tiny bound", assignee="worker")
+        assert kb.claim_task(conn, task_id) is not None
+        kbd._set_worker_pid(conn, task_id, 424242)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? WHERE id = "
+                "(SELECT current_run_id FROM tasks WHERE id = ?)",
+                (int(time.time()) - 5, task_id),
+            )
+
+    assert kc.run_slash(f"edit {task_id} --max-runtime 1s") == f"Edited {task_id}"
+
+    with kbc.connect_closing() as conn:
+        assert kbd.enforce_max_runtime(conn, signal_fn=lambda pid, sig: None) == [task_id]
+        task = kb.get_task(conn, task_id)
+        events = kb.list_events(conn, task_id)
+    assert task is not None and task.status == "ready"
+    assert any(event.kind == "timed_out" for event in events)
 
 
 def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):

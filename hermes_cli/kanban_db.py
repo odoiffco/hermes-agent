@@ -32,6 +32,7 @@ from typing import Any, Iterable, Optional
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
+UNSET = object()
 
 
 # --- Shared micro-helpers (row access, JSON, env, git) ---
@@ -3211,6 +3212,7 @@ def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> 
 def edit_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, priority: Optional[int] = None,
+    max_runtime_seconds: Any = UNSET,
     result: Optional[str] = None, summary: Optional[str] = None,
     metadata: Optional[dict] = None, board: Optional[str] = None,
 ) -> bool:
@@ -3219,6 +3221,8 @@ def edit_task(
         field for field, value in (("title", title), ("body", body), ("priority", priority))
         if value is not None
     ]
+    if max_runtime_seconds is not UNSET:
+        changed_fields.append("max_runtime_seconds")
     with write_txn(conn):
         status = _task_status(conn, task_id)
         if status is None or (result is not None and status != "done"):
@@ -3229,6 +3233,9 @@ def edit_task(
             if value is not None:
                 assignments.append(f"{field} = ?")
                 params.append(value)
+        if max_runtime_seconds is not UNSET:
+            assignments.append("max_runtime_seconds = ?")
+            params.append(max_runtime_seconds)
         if result is not None:
             assignments.append("result = ?")
             params.append(result)

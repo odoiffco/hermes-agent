@@ -282,6 +282,18 @@ def _parse_duration(val) -> Optional[int]:
     return int(n * units[s[-1]])
 
 
+def _parse_runtime_edit(val):
+    """Parse edit's runtime value while preserving omitted versus explicit clear."""
+    if val is None:
+        return kb.UNSET
+    if str(val).strip().lower() in {"none", "null", "unbounded"}:
+        return None
+    seconds = _parse_duration(val)
+    if seconds is None or seconds <= 0:
+        raise ValueError("must be greater than zero, or 'none' to clear")
+    return seconds
+
+
 def _cmd_init(args: argparse.Namespace) -> int:
     path = kb.init_db()
     print(f"Kanban DB initialized at {path}")
@@ -388,6 +400,15 @@ def _cmd_create(args: argparse.Namespace) -> int:
             running, message = _check_dispatcher_presence()
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
+    # Warn rather than inventing a default: the right wall-clock cap depends on
+    # the neighbouring goal_max_turns policy and on the work described by the card.
+    if task is not None and task.max_runtime_seconds is None:
+        print(
+            "⚠  No runtime bound was set; this task cannot be reclaimed by the "
+            "max-runtime watchdog. Set one now with "
+            f"`hermes kanban edit {task_id} --max-runtime <duration>`.",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -950,17 +971,21 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     title = getattr(args, "title", None)
     body = getattr(args, "body", None)
     priority = getattr(args, "priority", None)
+    try:
+        max_runtime = _parse_runtime_edit(getattr(args, "max_runtime", None))
+    except ValueError as exc:
+        return _err(f"kanban edit: --max-runtime {exc}", 2)
     if result is None and (summary is not None or raw_metadata is not None):
         return _err("kanban edit: --summary and --metadata require --result", 2)
-    if all(value is None for value in (title, body, priority, result)):
-        return _err("kanban edit: provide --title, --body, --priority, or --result", 2)
+    if all(value is None for value in (title, body, priority, result)) and max_runtime is kb.UNSET:
+        return _err("kanban edit: provide --title, --body, --priority, --max-runtime, or --result", 2)
     metadata, rc = _parse_metadata_flag(raw_metadata)
     if rc:
         return rc
     with kbc.connect_closing() as conn:
         ok = kb.edit_task(
             conn, args.task_id, title=title, body=body, priority=priority,
-            result=result, summary=summary, metadata=metadata,
+            max_runtime_seconds=max_runtime, result=result, summary=summary, metadata=metadata,
         )
     return _ok_or_err(
         ok,

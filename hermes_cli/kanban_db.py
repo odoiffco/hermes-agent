@@ -108,7 +108,7 @@ VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", 
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient", "routing"}
 
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
@@ -2683,15 +2683,30 @@ def reclaim_task(
 def reassign_task(
     conn: sqlite3.Connection, task_id: str, profile: Optional[str], *, reclaim_first: bool = False,
     reason: Optional[str] = None,
+    orchestrator_profile: Optional[str] = None,
 ) -> bool:
     """Reassign (None unassigns); a running task is refused unless
-    ``reclaim_first`` releases its claim — the "this profile's model is broken" path."""
+    ``reclaim_first`` releases its claim — the "this profile's model is broken" path.
+    A routing block is released only to a non-router assignee when a router is configured.
+    """
+    profile = _canonical_assignee(profile)
+    prior = conn.execute("SELECT status, block_kind FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if orchestrator_profile is None:
+        from hermes_cli.config import load_config_readonly
+        orchestrator_profile = (load_config_readonly().get("kanban") or {}).get("orchestrator_profile", "")
+    if orchestrator_profile:
+        orchestrator_profile = _canonical_assignee(orchestrator_profile)
     if reclaim_first:
         # Safe to call even if nothing to reclaim.
         reclaim_task(conn, task_id, reason=reason or "reassign")
     # assign_task handles its own txn + the still-running guard.
     try:
-        return assign_task(conn, task_id, profile)
+        assigned = assign_task(conn, task_id, profile)
+        if (assigned and prior is not None and prior["status"] == "blocked"
+                and prior["block_kind"] == "routing" and orchestrator_profile
+                and profile and profile != orchestrator_profile):
+            return unblock_task(conn, task_id)
+        return assigned
     except RuntimeError:
         # Task is still running and reclaim_first was False; caller
         # needs to decide whether to retry with reclaim.
@@ -3405,7 +3420,8 @@ def _route_block(
     ``todo`` for ``recompute_ready``, so a cron never sees a dependency-wait
     as something to "unblock". Callers that pass ``dependency`` with no
     incomplete parent are re-kinded to ``needs_input`` before this runs
-    (see :func:`block_task`). Every other kind counts unblock-loop
+    (see :func:`block_task`). Routing stays board-local with its recurrence
+    counter pinned to zero. Every other kind counts unblock-loop
     recurrences: block_task only fires from running/ready (AFTER an unblock
     returned the task to the pool), so a stored ``block_kind`` equal to the
     incoming one means blocked -> unblocked -> re-block for the same cause
@@ -3415,6 +3431,8 @@ def _route_block(
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
         return "todo", "dependency_wait", "block_kind    = ?", (kind,), payload
+    if kind == "routing":
+        return "blocked", "blocked", "block_kind = ?, block_recurrences = 0", (kind,), payload
     recurrences = prev_recurrences + 1 if prev_kind == kind else 1
     set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}

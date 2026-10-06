@@ -32,6 +32,23 @@ class DisconnectedAdapters(dict):
         return None
 
 
+def test_routing_block_never_sends_or_wakes(tmp_path, monkeypatch):
+    """A subscribed routing-only episode advances its cursor without operator output."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "routing.db"))
+    kb.init_db()
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="router-only", assignee="lumbergh")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1",
+                           delivery_mode="notify+wake")
+        assert kb.block_task(conn, tid, kind="routing", reason="route without an operator")
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert adapter.sent == []
+    assert adapter.handled == []
+    assert _unseen_terminal_events(tid) == []
+
+
 async def _run_one_notifier_tick(monkeypatch, runner):
     real_sleep = asyncio.sleep
 

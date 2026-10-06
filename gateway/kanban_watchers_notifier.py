@@ -50,6 +50,13 @@ TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "st
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
 
 
+def suppressed_event(ev) -> bool:
+    """Routing is board-local bookkeeping, never an owner ping or wake."""
+    payload = ev.payload or {}
+    return ((ev.kind in {"blocked", "block_loop_detected"} and payload.get("kind") == "routing")
+            or (ev.kind == "status" and payload.get("status") == "routing"))
+
+
 def diagnostic_event(ev) -> bool:
     """Infrastructure attention is distinct from an explicit owner decision."""
     if ev.kind in {"crashed", "timed_out", "gave_up"}:
@@ -587,7 +594,7 @@ class _KanbanNotification:
     def build_wake_text(self) -> None:
         """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
         task, sub = self.task, self.sub
-        self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
+        self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS and not suppressed_event(ev)} if self.wake_agent else set()
         self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds)
         if not self.wake_kinds:
             return
@@ -687,6 +694,8 @@ class _KanbanNotification:
 
     async def _send_event(self, ev: Any, msg: str) -> bool:
         """Send one text ping; raises on adapter exception or SendResult(success=False)."""
+        if suppressed_event(ev):
+            return False
         from gateway.warning_notifications import present_notification
         sub, adapter = self.sub, self.adapter
         delivery_metadata = sub.get("delivery_metadata")

@@ -179,7 +179,7 @@ KANBAN_BLOCK_SCHEMA = _schema(
         "no agent can do), or 'transient' (a flaky failure that may clear). "
         "``reason`` is shown to the human on the board. If a task keeps "
         "getting unblocked and re-blocked for the same reason, it is "
-        "auto-escalated to triage. Use for genuine blockers only — don't "
+        "auto-escalated to triage, except board-local routing blocks. Use for genuine blockers only — don't "
         "block on things you can resolve yourself."
     ),
     {
@@ -191,12 +191,13 @@ KANBAN_BLOCK_SCHEMA = _schema(
         )),
         "kind": {
             "type": "string",
-            "enum": ["dependency", "needs_input", "capability", "transient"],
+            "enum": ["dependency", "needs_input", "capability", "transient", "routing"],
             "description": (
                 "Why you're blocked. 'dependency' waits in todo and "
                 "resumes automatically when an incomplete parent finishes; "
                 "if no parent is open it is recorded as needs_input instead. "
-                "The others surface to a human. Omit only if none apply."
+                "'routing' is board-visible but produces no operator notification or escalation. "
+                "The other kinds surface to a human. Omit only if none apply."
             ),
         },
     },

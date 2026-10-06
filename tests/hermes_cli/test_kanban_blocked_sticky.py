@@ -84,6 +84,39 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("recovery", ["reassign", "raise_limit"])
+@pytest.mark.parametrize("force_trip", [False, True])
+def test_breaker_observability_preserves_recovery_policy(
+    kanban_home: Path, recovery: str, force_trip: bool,
+) -> None:
+    from hermes_cli import kanban_db_dispatch as dispatch
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="breaker recovery", assignee="worker-a")
+        kb.claim_task(conn, tid)
+        assert dispatch._record_task_failure(
+            conn, tid, "worker failed", outcome="crashed", failure_limit=1,
+            force_trip=force_trip, release_claim=True, end_run=True,
+        )
+        assert kb.get_task(conn, tid).status == "blocked"
+        blocked = kb._latest_event(conn, tid, "blocked")
+        assert kb._json_dict(blocked["payload"])["kind"] == "breaker"
+        assert kb._has_sticky_block(conn, tid) is force_trip
+        assert kb.recompute_ready(conn, failure_limit=1) == 0
+
+        if recovery == "reassign":
+            assert kb.assign_task(conn, tid, "worker-b")
+            assert kb.get_task(conn, tid).consecutive_failures == 0
+            limit = 1
+        else:
+            limit = 2
+
+        assert kb.recompute_ready(conn, failure_limit=limit) == (0 if force_trip else 1)
+        assert kb.get_task(conn, tid).status == ("blocked" if force_trip else "ready")
+        if force_trip:
+            assert kb.unblock_task(conn, tid)
+            assert not kb._has_sticky_block(conn, tid)
+            assert kb.get_task(conn, tid).status == "ready"
 
 
 # ---------------------------------------------------------------------------

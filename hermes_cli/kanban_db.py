@@ -2166,12 +2166,15 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     releases it; a task with no such event at all (direct DB edit) auto-recovers.
     """
     row = conn.execute(
-        "SELECT kind FROM task_events "
+        "SELECT kind, payload FROM task_events "
         "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
         "ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
-    if row and row["kind"] == "blocked":
+    if (row and row["kind"] == "blocked"
+            and _json_dict(row["payload"]).get("kind") != "breaker"):
         return True
+    # Breaker blocked events are observability, not an explicit operator hold.
+    # Ordinary trips stay counter-judged; force trips use gave_up.sticky below.
     trip = conn.execute(
         "SELECT payload FROM task_events "
         "WHERE task_id = ? AND kind = 'gave_up' AND id > COALESCE("

@@ -301,6 +301,11 @@ class _Collector:
 
     def _claim_for_sub(self, conn: Any, slug: str, sub: dict) -> Optional[dict]:
         """Claim one subscription's unseen events; None when skipped or nothing new."""
+        from hermes_cli.kanban_db import tenant_dispatch_allowed
+        row = conn.execute("SELECT tenant FROM tasks WHERE id = ?", (sub["task_id"],)).fetchone()
+        if row is not None and not tenant_dispatch_allowed(row["tenant"]):
+            logger.debug("kanban notifier: tenant fence held %s on %s", sub["task_id"], slug)
+            return None
         owner_profile = sub.get("notifier_profile") or None
         platform = (sub.get("platform") or "").lower()
         if platform not in self.active_platforms:

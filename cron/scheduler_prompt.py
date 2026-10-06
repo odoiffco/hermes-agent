@@ -176,6 +176,31 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                 continue  # silent skip — no archive with a usable answer
             latest_output = _clip_to_context_budget(latest_output)
             if is_self:
+                # Only terminal rows describe previous outcomes; running can be this fire.
+                try:
+                    from cron import executions
+                    from hermes_constants import get_hermes_home
+
+                    ledger_path = executions.EXECUTIONS_FILE or (
+                        get_hermes_home().resolve() / "cron" / "executions.db")
+                    if ledger_path.is_file():
+                        rows = executions.list_executions(job_id=source_job_id, limit=5)
+                        lines = [
+                            "Previous run statuses (machine-readable, from the executions ledger "
+                            "— do not infer run outcomes from prose):"
+                        ]
+                        for row in rows:
+                            if row["status"] not in ("completed", "failed"):
+                                continue
+                            error = str(row.get("error") or "null").splitlines()[0][:160]
+                            lines.append(
+                                f"- {row['claimed_at']} {row['status']} "
+                                f"run={str(row['id'])[:8]} error={error}")
+                        if len(lines) > 1:
+                            latest_output = "\n".join(lines) + "\n\n" + latest_output
+                except Exception:
+                    logger.warning("context_from: failed to read execution statuses for job %r",
+                                   source_job_id, exc_info=True)
                 prompt = _prepend_context_block(
                     prompt, "Your previous run's output", _SELF_CONTEXT_INTRO, latest_output)
             else:

@@ -362,6 +362,14 @@ _SPECS = [
         _arg("--dry-run", action="store_true", help="Validate the promotion without mutating state"),
         _arg("--json", dest="json", action="store_true", help="Emit machine-readable JSON result"),
     ], help="Manually move one or more todo/blocked tasks to ready (recovery path)"),
+    _cmd("supersede", [
+        _arg("anchor_id", help="Live anchor task id (scope: anchor + dependency descendants)"),
+        _arg("--reason", required=True, help="Authoritative supersession ruling"),
+        _arg("--dry-run", action="store_true", help="Print disposition order without mutation"),
+    ], help="Stamp and archive anchor + descendants atomically, deepest first",
+       description="Scope follows dependency edges, not decomposition membership. An umbrella "
+                   "does not include its ancestors; parallel siblings are not included. "
+                   "A done/archived anchor is a no-op even with live descendants."),
     _cmd("archive", [
         _arg("task_ids", nargs="*", help="Task ids to archive (default mode)"),
         _arg("--rm", dest="purge_ids", nargs="+",

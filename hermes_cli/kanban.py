@@ -207,7 +207,7 @@ def _profile_author() -> str:
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
-    "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
+    "schedule", "unblock", "promote", "archive", "supersede", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
     "gc",
@@ -1160,6 +1160,37 @@ def _cmd_promote(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+def _cmd_supersede(args: argparse.Namespace) -> int:
+    if not args.reason.strip():
+        return _err("kanban supersede: --reason must not be empty", 2)
+    with kbc.connect_closing() as conn:
+        if args.dry_run:
+            with conn:
+                rows = kb._supersede_disposition(conn, args.anchor_id)
+            if not rows:
+                return _err(f"unknown task {args.anchor_id}")
+            anchor = next(row for row in rows if row["id"] == args.anchor_id)
+            no_op = anchor["status"] in {"done", "archived"}
+            for row in rows:
+                disposition = "no-op" if no_op else (
+                    "left-terminal" if row["status"] in {"done", "archived"} else "archive"
+                )
+                print(f"{row['id']} {row['status']} {disposition}")
+            return 0
+        result = kb.supersede_family(conn, args.anchor_id, reason=args.reason, author=_profile_author())
+    if not result["ok"]:
+        return _err(result["reason"])
+    if result.get("no_op"):
+        print(f"No-op {args.anchor_id} (already terminal)")
+    for tid in result["stamped"]:
+        print(f"Stamped {tid}")
+    for tid in result["archived"]:
+        print(f"Archived {tid}")
+    for row in result["left_terminal"]:
+        print(f"Left terminal {row['id']} ({row['status']})")
+    return 0
+
+
 def _cmd_archive(args: argparse.Namespace) -> int:
     ids = list(args.task_ids or [])
     purge_ids = list(getattr(args, "purge_ids", None) or [])
@@ -1371,7 +1402,8 @@ _HANDLERS = {
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
-    "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
+    "archive": _cmd_archive,
+    "supersede": _cmd_supersede, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
     "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,
     "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,

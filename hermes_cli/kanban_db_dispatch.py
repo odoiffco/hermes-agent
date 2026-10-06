@@ -123,6 +123,8 @@ class DispatchResult:
     """Unassigned task ids that had ``kanban.default_assignee`` applied this
     tick before spawning, so telemetry/CLI/dashboard can show the dispatcher
     acting on the fallback rule rather than explicit assignments."""
+    routing_blocked: list[str] = field(default_factory=list)
+    """Router-lane cards parked without spawning an executor or notifying the owner."""
     skipped_nonspawnable: list[str] = field(default_factory=list)
     """Ready task ids whose assignee names a control-plane lane (e.g. a Claude
     Code terminal like ``orion-cc``), not a Hermes profile. Expected steady-state
@@ -2064,6 +2066,7 @@ def dispatch_once(
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
+    orchestrator_profile: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
@@ -2087,6 +2090,7 @@ def dispatch_once(
             stale_timeout_seconds=stale_timeout_seconds,
             board=board,
             default_assignee=default_assignee,
+            orchestrator_profile=orchestrator_profile,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
         )
@@ -2455,6 +2459,7 @@ def _dispatch_once_locked(
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
+    orchestrator_profile: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
@@ -2544,6 +2549,13 @@ def _dispatch_once_locked(
                 continue
             row_assignee = default_assignee
             result.auto_assigned_default.append(row["id"])
+        if orchestrator_profile and row_assignee == orchestrator_profile:
+            if dry_run or _kb.block_task(
+                conn, row["id"], kind="routing",
+                reason="routed to the router lane; the router has no execution tools",
+            ):
+                result.routing_blocked.append(row["id"])
+            continue
         if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
             spawned += 1
 
@@ -3147,12 +3159,15 @@ def run_daemon(
             # Re-resolved every tick (config load is mtime-cached) so operator
             # edits apply without a restart.
             max_in_progress = resolve_max_in_progress(configured_max_in_progress())
+            from hermes_cli.config import load_config_readonly
+            orchestrator_profile = (load_config_readonly().get("kanban") or {}).get("orchestrator_profile")
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
+                    orchestrator_profile=orchestrator_profile,
                 )
             if on_tick is not None:
                 with contextlib.suppress(Exception):

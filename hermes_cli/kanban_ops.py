@@ -66,6 +66,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         _cfg = load_config()
         _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
         default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
+        orchestrator_profile = (_kanban_cfg.get("orchestrator_profile") or "").strip() or None
         max_in_progress_per_profile = kbd._positive_int(
             _kanban_cfg.get("max_in_progress_per_profile"), None
         )
@@ -79,7 +80,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             cli_max if cli_max is not None else kbd._positive_int(_kanban_cfg.get("max_spawn"), None)
         )
     except Exception:
-        default_assignee = max_in_progress_per_profile = max_in_progress = None
+        default_assignee = orchestrator_profile = max_in_progress_per_profile = max_in_progress = None
         max_spawn = getattr(args, "max", None)
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
@@ -89,6 +90,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             max_in_progress=max_in_progress,
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
             default_assignee=default_assignee,
+            orchestrator_profile=orchestrator_profile,
             max_in_progress_per_profile=max_in_progress_per_profile,
         )
     if getattr(args, "json", False):
@@ -109,6 +111,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            "routing_blocked": res.routing_blocked,
             "respawn_guarded": [
                 {"task_id": tid, "reason": reason}
                 for (tid, reason) in res.respawn_guarded

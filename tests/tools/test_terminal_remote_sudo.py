@@ -1,5 +1,6 @@
 """Per-call SSH sudo uses the same masked prompt without changing local terminal state."""
 import json
+import logging
 import os
 import re
 import subprocess
@@ -124,6 +125,64 @@ def test_degraded_remote_evicts_cached_connection_before_retry(monkeypatch):
         assert observed == [([], 1), ([], 2)], observed
     finally:
         terminal._active_environments.pop(key, None)
+
+
+def test_ssh_macos_open_signal_reports_outcome_without_command(monkeypatch, caplog):
+    from tools import terminal_tool_macos_open as macos_open
+    transform = macos_open._transform_macos_open_command
+    env = ssh.SSHEnvironment.__new__(ssh.SSHEnvironment)
+    env.user, env.host, env.port = "operator", "target", 22
+    caplog.set_level(logging.INFO, logger="tools.environments.ssh")
+    command = "open private-report.pdf"
+    for system, outcome in (("Darwin", "applied"), ("Linux", "skipped")):
+        monkeypatch.setattr(macos_open, "_transform_macos_open_command",
+                            lambda value: transform(value, system=system))
+        caplog.clear()
+        prepared, stdin = env._prepare_command(command)
+        assert stdin is None
+        assert (prepared != command) == (outcome == "applied")
+        records = [r for r in caplog.records if r.getMessage().startswith("ssh-macos-open")]
+        assert len(records) == 1
+        message = records[0].getMessage()
+        assert f"outcome={outcome}" in message and env._sudo_cache_target in message
+        assert "private-report.pdf" not in message
+    caplog.clear()
+    for value in ("pwd", "open 'unterminated"):
+        assert env._prepare_command(value) == (value, None)
+    assert not [r for r in caplog.records if r.getMessage().startswith("ssh-macos-open")]
+
+
+def test_degraded_eviction_signal_reports_hits_and_misses(monkeypatch, caplog):
+    from tools.terminal_tool_lifecycle import _evict_environment_for_task
+    monkeypatch.setattr(terminal, "_resolve_container_task_id", lambda task_id: "signal-resolved")
+    monkeypatch.setattr(terminal, "_active_environments", {})
+    monkeypatch.setattr(terminal, "_last_activity", {})
+    cleaned = []
+
+    class FakeEnv:
+        def cleanup(self):
+            cleaned.append(True)
+
+    hit = "remote-ssh-signal-resolved"
+    terminal._active_environments[hit] = FakeEnv()
+    terminal._last_activity[hit] = 1
+    caplog.set_level(logging.INFO, logger="tools.terminal_tool")
+    _evict_environment_for_task("signal-task")
+    assert cleaned == [True] and terminal._active_environments == {}
+    assert terminal._last_activity == {}
+    records = [r for r in caplog.records if r.getMessage().startswith("degraded-eviction")]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "task_id=signal-task" in message
+    assert f"evicted={ [hit]!r}" in message and "count=1" in message
+    assert "missed=['signal-resolved', 'signal-task']" in message
+    caplog.clear()
+    _evict_environment_for_task("signal-task")
+    records = [r for r in caplog.records if r.getMessage().startswith("degraded-eviction")]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "evicted=[] count=0" in message
+    assert f"missed={sorted([hit, 'signal-resolved', 'signal-task'])!r}" in message
 
 
 def test_remote_rejects_unconfigured_or_background_and_sudo_stdin_guard(monkeypatch):

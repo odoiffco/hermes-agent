@@ -62,7 +62,15 @@ class SSHEnvironment(BaseEnvironment):
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
         from tools.terminal_tool_macos_open import _transform_macos_open_command
         from tools.terminal_tool_sudo import _transform_sudo_command
-        transformed, stdin = _transform_sudo_command(_transform_macos_open_command(command),
+        open_command = _transform_macos_open_command(command)
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            tokens = []
+        if tokens and tokens[0] == "open":
+            logger.info("ssh-macos-open outcome=%s cache_target=%s",
+                        "applied" if open_command != command else "skipped", self._sudo_cache_target)
+        transformed, stdin = _transform_sudo_command(open_command,
                                                      sudo_nopasswd_check=self._sudo_nopasswd_works,
                                                      cache_target=self._sudo_cache_target)
         assert transformed is not None

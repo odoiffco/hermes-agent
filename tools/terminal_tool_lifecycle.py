@@ -323,12 +323,16 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
     if task_id:
         keys.add(task_id)
     evicted = []
+    evicted_keys = []
     with _env_lock:
         for key in keys:
             env = _active_environments.pop(key, None)
             _last_activity.pop(key, None)
             if env is not None:
                 evicted.append(env)
+                evicted_keys.append(key)
+    logger.info("degraded-eviction task_id=%s evicted=%s count=%s missed=%s",
+                task_id, sorted(evicted_keys), len(evicted_keys), sorted(keys - set(evicted_keys)))
     for env in evicted:
         with _quiet("cleanup of degraded environment failed"):
             env.cleanup()

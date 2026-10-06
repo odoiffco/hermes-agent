@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -17,6 +18,8 @@ import sys
 import time
 from dataclasses import dataclass
 from dataclasses import field
+from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from typing import Callable
@@ -1120,6 +1123,72 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     return " ".join(lines)[-400:]
 
 
+@lru_cache(maxsize=1)
+def _gateway_life_records(path: Path) -> list[tuple[float, dict]]:
+    """Bounded process-ledger read, cached only for the current reclaim sweep."""
+    try:
+        with path.open("rb") as ledger:
+            ledger.seek(0, os.SEEK_END)
+            offset = max(0, ledger.tell() - 1024 * 1024)
+            ledger.seek(offset)
+            raw = ledger.read(1024 * 1024)
+    except OSError:
+        return []
+    # A tail starting inside a JSON record cannot witness a gateway life.
+    lines = raw.splitlines()
+    if offset:
+        lines = lines[1:]
+    records = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+            if not isinstance(record, dict) or not isinstance(record.get("tag"), str):
+                continue
+            stamp = datetime.fromisoformat(record["ts"]).timestamp()
+        except (ValueError, TypeError, KeyError, OverflowError, OSError):
+            continue
+        records.append((stamp, record))
+    return records
+
+
+def _gateway_life_evidence(
+    claimer: Optional[str], anchor_ts: Optional[int], now: float,
+) -> Optional[dict]:
+    """Exempt only an anchored worker from a provably ended local gateway life."""
+    if not claimer or not claimer.startswith(_kb._host_prefix()) or anchor_ts is None:
+        return None
+    try:
+        host, pid_text = claimer.rsplit(":", 1)
+        pid = int(pid_text)
+        if host + ":" != _kb._host_prefix() or pid <= 0:
+            return None
+    except ValueError:
+        return None
+    from gateway.lifecycle_ledger import _home_path
+    records = _gateway_life_records(_home_path(None, "logs", "gateway-exit-diag.log"))
+    starts = [(stamp, r) for stamp, r in records
+              if r.get("tag") == "gateway.start" and r.get("pid") == pid and stamp <= anchor_ts]
+    if not starts:
+        return None
+    start_ts, start = max(starts, key=lambda item: item[0])
+    # A later start is a reused PID, not a terminal witness for this life.
+    next_start = min((stamp for stamp, r in records if stamp > start_ts
+                      and r.get("tag") == "gateway.start" and r.get("pid") == pid), default=float("inf"))
+    terminal_tags = {"asyncio.run.returned", "asyncio.run.SystemExit", "asyncio.run.exception",
+                     "gateway.exit_clean", "gateway.exit_nonzero", "atexit.hook"}
+    terminals = [(stamp, r) for stamp, r in records if start_ts < stamp < next_start and
+                 ((r.get("tag") in terminal_tags and r.get("pid") == pid) or
+                  (r.get("tag") == "gateway.previous_unclean_exit" and r.get("prior_pid") == pid))]
+    if not terminals:
+        return None
+    exit_ts, terminal = min(terminals, key=lambda item: item[0])
+    if not start_ts <= anchor_ts <= exit_ts <= now:
+        return None
+    return {"infrastructure": "gateway_restart", "gateway_pid": pid,
+            "gateway_start_ts": start["ts"], "gateway_exit_ts": terminal["ts"],
+            "terminal_tag": terminal["tag"], "anchor_ts": anchor_ts}
+
+
 @dataclass
 class _DeadWorker:
     """How ``detect_crashed_workers`` should book one dead worker."""
@@ -1134,6 +1203,7 @@ class _DeadWorker:
     terminal_provider: bool = False
     secret_hydration: bool = False
     secret_name: Optional[str] = None
+    infra_evidence: Optional[dict] = None
     """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
     credential/model — trips the breaker on this first occurrence."""
 
@@ -1148,7 +1218,7 @@ class _DeadWorker:
 
 def _classify_dead_worker(
     pid: int, claimer: Optional[str], *, task_id: Optional[str] = None, board: Optional[str] = None,
-    assignee: Optional[str] = None,
+    assignee: Optional[str] = None, anchor_ts: Optional[int] = None,
 ) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping.
 
@@ -1156,7 +1226,7 @@ def _classify_dead_worker(
     in the event payload, appended to the error text) so the board and the retry
     worker see WHY instead of a bare label; a rate-limited requeue does not need it.
     """
-    dead = _classify_dead_worker_exit(pid, claimer, task_id=task_id, board=board)
+    dead = _classify_dead_worker_exit(pid, claimer, task_id=task_id, board=board, anchor_ts=anchor_ts)
     if task_id and not dead.rate_limited:
         worker_output = _worker_final_output(task_id, board=board)
         if dead.kind not in ("clean_exit", "rate_limited"):
@@ -1187,6 +1257,7 @@ def _classify_dead_worker_exit(
     *,
     task_id: Optional[str] = None,
     board: Optional[str] = None,
+    anchor_ts: Optional[int] = None,
 ) -> _DeadWorker:
     """Exit status -> reclaim bookkeeping, before the worker's own words are folded in.
 
@@ -1194,7 +1265,8 @@ def _classify_dead_worker_exit(
     reads the exit trailer the worker left in its log instead, so the same death
     gets the same booking (protocol violation / rate-limit requeue / crash) as
     under the gateway-embedded dispatcher. A worker that never reached its exit
-    epilogue (killed, OOM) leaves no trailer and stays a plain crash.
+    epilogue (killed, OOM) leaves no trailer; only gateway-life evidence can
+    exempt that unknown death from the failure budget.
     """
     kind, code = _classify_worker_exit(pid)
     if kind == "unknown" and task_id:
@@ -1240,6 +1312,14 @@ def _classify_dead_worker_exit(
     elif kind == "signaled":
         error_text = f"pid {pid} killed by signal {code}"
     else:
+        evidence = _gateway_life_evidence(claimer, anchor_ts, time.time())
+        if evidence:
+            return _DeadWorker(
+                kind, code,
+                f"pid {pid} died in a gateway restart (gateway pid {evidence['gateway_pid']} "
+                f"exited {evidence['gateway_exit_ts']}) — requeued without counting a failure",
+                "crashed", {"pid": pid, "claimer": claimer, **evidence}, infra_evidence=evidence,
+            )
         error_text = f"pid {pid} not alive"
     event_payload = {"pid": pid, "claimer": claimer}
     if code is not None and kind != "unknown":
@@ -1267,7 +1347,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
+            "SELECT id, worker_pid, worker_started_at, claim_lock, last_heartbeat_at, assignee, "
+            "COALESCE(started_at, (SELECT started_at FROM task_runs WHERE id = tasks.current_run_id)) AS started_at "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
@@ -1285,8 +1366,17 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 continue
 
             pid = int(row["worker_pid"])
+            anchor_ts = row["last_heartbeat_at"]
+            if anchor_ts is None:
+                anchor_ts = started_at
+            if anchor_ts is None:
+                try:
+                    anchor_ts = _kb._opt_int(row["worker_started_at"])
+                except (TypeError, ValueError):
+                    # Modern process fingerprints need not be Unix timestamps.
+                    anchor_ts = None
             dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board,
-                                         assignee=row["assignee"])
+                                         assignee=row["assignee"], anchor_ts=anchor_ts)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             if dead.secret_hydration:
@@ -1320,7 +1410,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 "outcome": dead.run_outcome,
                 "retry_status": retry_status,
             })
-            if dead.rate_limited or dead.protocol_violation or dead.secret_hydration:
+            if dead.rate_limited or dead.protocol_violation or dead.secret_hydration or dead.infra_evidence:
                 # Stamp last_failure_error WITHOUT touching ``consecutive_failures``:
                 # a rate-limited requeue must show ``check_respawn_guard`` a quota
                 # blocker; a below-budget protocol violation never reaches
@@ -1352,6 +1442,8 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
     auto_blocked: list[str] = []
     fp_counts: dict[str, int] = {}
     for _, _, _, dead in crash_details:
+        if dead.infra_evidence:
+            continue
         fp = _error_fingerprint(dead.error_text)
         fp_counts[fp] = fp_counts.get(fp, 0) + 1
     for tid, pid, claimer, dead in crash_details:
@@ -1400,6 +1492,12 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer, "terminal_provider": True},
             )
+        elif dead.infra_evidence:
+            tripped = _record_task_failure(
+                conn, tid, error=error_text, outcome="crashed", release_claim=False,
+                end_run=False, infrastructure=True,
+                event_payload_extra={"pid": pid, "claimer": claimer, **dead.infra_evidence},
+            )
         else:
             is_systemic = fp_counts.get(_error_fingerprint(error_text), 0) >= 3
             extra = {"pid": pid, "claimer": claimer}
@@ -1430,6 +1528,7 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     wall, released WITHOUT counting a failure and surfaced via the
     ``_last_rate_limited`` attribute (the return stays crashed-only).
     """
+    _gateway_life_records.cache_clear()
     sweep = _reclaim_dead_workers(conn, board=board)
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
@@ -1660,7 +1759,8 @@ def check_respawn_guard(
 
     Called per ready/review row before any claim attempt. Priority order:
     ``"infrastructure_cooldown"`` (latest run is a ``spawn_failed`` the host
-    refused — no restart-safe scope — within the cooldown; never counted),
+    refused — no restart-safe scope — or an evidence-backed gateway-restart
+    crash within the cooldown; never counted),
     ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
@@ -1700,6 +1800,10 @@ def check_respawn_guard(
             ended_at = latest_run["ended_at"]
             if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
                 return "infrastructure_cooldown"
+    if (latest_run is not None and latest_run["outcome"] == "crashed"
+            and _kb._json_dict(latest_run["metadata"]).get("infrastructure") == "gateway_restart"
+            and rl_cooldown > 0 and now - int(latest_run["ended_at"]) < rl_cooldown):
+        return "infrastructure_cooldown"
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so

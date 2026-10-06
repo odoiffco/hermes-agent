@@ -2554,6 +2554,7 @@ def release_stale_claims(
     ``enforce_max_runtime`` and ``detect_crashed_workers`` remain the upper bounds for genuinely wedged or
     dead workers.
     """
+    _gateway_life_records.cache_clear()
     now = int(time.time())
     reclaimed = 0
     host_prefix = _host_prefix()
@@ -2599,9 +2600,14 @@ def release_stale_claims(
             )
             if cur.rowcount != 1:
                 continue
+            evidence = (_gateway_life_evidence(row["claim_lock"], hb if hb is not None else now, now)
+                        if row["worker_pid"] is not None else None)
+            failure_error = (f"worker died in a gateway restart (gateway pid {evidence['gateway_pid']} "
+                             f"exited {evidence['gateway_exit_ts']}) — requeued without counting a failure"
+                             if evidence else f"stale_lock={row['claim_lock']}")
             run_id = _record_reclaim(
-                conn, row["id"], termination,
-                error=f"stale_lock={row['claim_lock']}",
+                conn, row["id"], {**termination, **(evidence or {})},
+                error=failure_error,
                 payload={
                     "stale_lock": row["claim_lock"],
                     "worker_pid": _opt_int(row["worker_pid"]),
@@ -2611,17 +2617,20 @@ def release_stale_claims(
                     "host_local": host_local,
                     "heartbeat_stale": bool(heartbeat_stale),
                     "retry_status": retry_status,
+                    **(evidence or {}),
                 },
             )
             reclaimed += 1
         # Own txn, after the reclaim commit (same shape as ``enforce_max_runtime``):
-        # the run ended without a verdict, so it counts toward the breaker and a
-        # trip flips the task to ``blocked`` + ``gave_up`` on top of ``reclaimed``.
+        # Unknown expiry counts toward the breaker; a proven gateway-life death
+        # records its evidence without charging the card's budget.
         _record_task_failure(
-            conn, row["id"], f"stale_lock={row['claim_lock']}",
+            conn, row["id"], failure_error,
             outcome="reclaimed", failure_limit=failure_limit,
             release_claim=False, end_run=False,
-            event_payload_extra={"worker_pid": _opt_int(row["worker_pid"]), "retry_status": retry_status},
+            infrastructure=bool(evidence),
+            event_payload_extra={"worker_pid": _opt_int(row["worker_pid"]), "retry_status": retry_status,
+                                 **(evidence or {})},
         )
         # Post-commit observer; every non-reclaim branch ``continue``d above.
         if _kanban_observer_consumed("on_kanban_worker_stale_claim"):
@@ -4782,6 +4791,7 @@ from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     DispatchResult,
     _clear_failure_counter,
     _defer_reclaim_for_live_worker,
+    _gateway_life_evidence, _gateway_life_records,
     _pid_alive,
     _record_task_failure,
     _terminate_reclaimed_worker,

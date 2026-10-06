@@ -53,9 +53,16 @@ KANBAN_SHOW_SCHEMA = _schema(
         "verbatim in your reasoning. Outside a dispatcher-spawned worker "
         "there is no default task: a bare call returns a pointer to "
         "``kanban_list`` instead of task state."
+        " For long records use mode=comments: newest comment by default, one "
+        "4000-character body chunk per read, with explicit omissions and id/offset "
+        "cursors to retrieve every comment without a file reader. Full mode is unchanged."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "mode": {"type": "string", "enum": ["full", "comments"],
+                 "description": "Defaults to full. comments is a bounded comments-only read."},
+        "comment_id": _prop("integer", "In comments mode, exact comment id; omitted means newest."),
+        "comment_offset": _prop("integer", "In comments mode, body character offset (default 0). Use next_comment_offset for the remainder."),
     },
     [],
 )
@@ -67,7 +74,9 @@ KANBAN_LIST_SCHEMA = _schema(
         "work to route. Supports the same core filters as the CLI: assignee, "
         "status, tenant, include_archived, and limit. Returns compact rows "
         "with ids, title, status, assignee, priority, parent/child ids, and "
-        "counts. Bounded to 50 rows by default, 200 max, with truncation "
+        "counts, block_kind, block_recurrences and historical latest_block "
+        "(kind/requested_kind and a visibly capped reason excerpt). "
+        "Bounded to 50 rows by default, 200 max, with truncation "
         "metadata. Also recomputes ready tasks before listing, matching the "
         "CLI. Orchestrator-only — dispatcher-spawned task workers never see "
         "this tool."

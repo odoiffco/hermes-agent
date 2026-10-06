@@ -459,7 +459,9 @@ def _cmd_list(args: argparse.Namespace) -> int:
             workflow_template_id=args.workflow_template_id, current_step_key=args.current_step_key,
         )
         states = kb.result_states(conn, tasks)
-    if _json_out(args, [_task_to_dict(t, states[t.id]) for t in tasks]):
+        from hermes_cli.kanban_reads import block_fields
+        rows = [{**_task_to_dict(t, states[t.id]), **block_fields(conn, t)} for t in tasks]
+    if _json_out(args, rows):
         return 0
     # Passive discoverability: only multi-board users see which board this is.
     try:
@@ -474,7 +476,9 @@ def _cmd_list(args: argparse.Namespace) -> int:
         print("(no matching tasks)")
         return 0
     for t in tasks:
-        print(_fmt_task_line(t, states[t.id]))
+        block = (f" [block_kind={t.block_kind}; block_recurrences={t.block_recurrences}]"
+                 if t.status == "blocked" else "")
+        print(_fmt_task_line(t, states[t.id]) + block)
     return 0
 
 
@@ -512,6 +516,13 @@ def _cmd_show(args: argparse.Namespace) -> int:
         task = kb.get_task(conn, args.task_id)
         if not task:
             return _err(f"no such task: {args.task_id}")
+        if getattr(args, "mode", "full") == "comments":
+            from hermes_cli.kanban_reads import comment_read
+            _print_json(comment_read(conn, task, comment_id=getattr(args, "comment_id", None),
+                                     comment_offset=getattr(args, "comment_offset", 0)))
+            return 0
+        if getattr(args, "comment_id", None) is not None or getattr(args, "comment_offset", 0):
+            return _err("--comment-id/--comment-offset require --mode comments")
         comments = kb.list_comments(conn, args.task_id)
         events = kb.list_events(conn, args.task_id)
         parents = kb.parent_ids(conn, args.task_id)

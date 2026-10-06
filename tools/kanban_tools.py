@@ -676,6 +676,14 @@ def _handle_show(args: dict, **kw) -> str:
         })
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
+        mode = args.get("mode", "full")
+        _check(mode in ("full", "comments"), "mode must be full or comments")
+        if mode == "comments":
+            from hermes_cli.kanban_reads import comment_read
+            return json.dumps(comment_read(conn, task, comment_id=args.get("comment_id"),
+                                           comment_offset=args.get("comment_offset", 0)), ensure_ascii=False)
+        _check(not ("comment_id" in args or "comment_offset" in args),
+               "comment_id/comment_offset require mode=comments")
         return json.dumps({
             "task": {**_fields(task, _TASK_FIELDS), "result_state": kb.result_state(conn, task)},
             "parents": kb.parent_ids(conn, tid),
@@ -715,8 +723,10 @@ def _handle_list(args: dict, **kw) -> str:
         truncated = len(rows) > limit
         tasks = rows[:limit]
         states = kb.result_states(conn, tasks)
+        from hermes_cli.kanban_reads import block_fields
         return json.dumps({
-            "tasks": [{**_task_summary_dict(kb, conn, t), "result_state": states[t.id]} for t in tasks],
+            "tasks": [{**_task_summary_dict(kb, conn, t), "result_state": states[t.id],
+                       **block_fields(conn, t)} for t in tasks],
             "count": len(tasks), "limit": limit, "truncated": truncated,
             "next_limit": (min(limit * 2, KANBAN_LIST_MAX_LIMIT)
                            if truncated and limit < KANBAN_LIST_MAX_LIMIT else None),

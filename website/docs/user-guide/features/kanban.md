@@ -35,6 +35,45 @@ The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
 
 Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
 
+### Reporting blocked cards and long threads
+
+`kanban_list` and `hermes kanban list --json` append `block_kind`,
+`block_recurrences`, and `latest_block` without changing status semantics.
+`latest_block` is historical: its `event_kind`, effective `kind`, and
+`requested_kind` describe the most recent block/dependency-wait/loop event,
+not necessarily the card's current status. Its reason excerpt is capped at
+500 characters; `reason_chars`, `reason_truncated`, and `remainder_hint`
+make an omission explicit. A null kind is a stored null, not an unread field.
+Text CLI list also labels the kind and recurrence count for blocked cards.
+
+Full show remains unchanged. A long task can exceed the tool's inline output
+cap; reporting lanes without a file reader can use the bounded comments path:
+
+```python
+kanban_show(task_id="t_example", mode="comments")  # newest comment
+kanban_show(task_id="t_example", mode="comments", comment_id=123,
+            comment_offset=4000)  # remaining body chunk
+```
+
+```bash
+hermes kanban show t_example --mode comments
+hermes kanban show t_example --mode comments --comment-id 123 --comment-offset 4000
+```
+
+Comments mode returns JSON on both surfaces, one comment at a time, with at
+most 4,000 body characters. It does not build `worker_context` or load the
+thread's other bodies, runs, or events. Follow `previous_comment_id` or
+`next_comment_id` to select another comment, and pin `comment_id` while
+following `next_comment_offset` to reconstruct a large body without gaps.
+IDs break same-second ties and remain stable when new comments arrive.
+`comment_count`, `omitted_comments`, `omitted_sections`, `body_chars`,
+`body_offset`, `body_truncated`, and `remainder_hint` state exactly what this
+read leaves out. `truncated=true` always marks this comments-only view as
+incomplete task state, even when the selected comment body is complete.
+Author display is capped at 200 characters and labelled if truncated;
+full show retains the original author and all other sections.
+
+
 This is the shape that covers the workloads `delegate_task` can't:
 
 - **Research triage** — parallel researchers + analyst + writer, human-in-the-loop.

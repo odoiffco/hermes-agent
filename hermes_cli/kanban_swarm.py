@@ -33,6 +33,8 @@ class SwarmWorkerSpec:
     profile: str
     title: str
     body: str
+    acceptance: str = ""
+    falsifier: str = ""
     skills: list[str] = field(default_factory=list)
     priority: int = 0
     max_runtime_seconds: Optional[int] = None
@@ -56,6 +58,13 @@ def _require_text(value: str, field_name: str) -> str:
     if not text:
         raise ValueError(f"{field_name} is required")
     return text
+
+
+def _criteria(acceptance: str, falsifier: str, label: str) -> str:
+    """Refuse unspecified work rather than manufacturing a plausible test."""
+    done = _require_text(acceptance, f"{label}.acceptance")
+    failure = _require_text(falsifier, f"{label}.falsifier")
+    return f"\n\n## Acceptance criteria\nObservable result: {done}\nFalsifier: {failure}\n"
 
 
 def _swarm_context(root_id: str, goal: str) -> str:
@@ -180,6 +189,8 @@ def _create_swarm_uncommitted(
     for i, spec in enumerate(worker_specs, start=1):
         _require_text(spec.profile, f"workers[{i}].profile")
         _require_text(spec.title, f"workers[{i}].title")
+        _require_text(spec.body, f"workers[{i}].body")
+        _criteria(spec.acceptance, spec.falsifier, f"workers[{i}]")
 
     common = dict(
         created_by=created_by, tenant=tenant,
@@ -190,7 +201,13 @@ def _create_swarm_uncommitted(
         title=root_title or f"Swarm: {goal.splitlines()[0][:80]}",
         body="Kanban Swarm v1 planning/root card. This card is completed "
              "immediately so parallel workers can start while it remains the "
-             f"shared blackboard and audit anchor.\n\nGoal:\n{goal}",
+             f"shared blackboard and audit anchor.\n\nGoal:\n{goal}"
+             + _criteria(
+                 "The root's topology blackboard update records all created worker, verifier, "
+                 "and synthesizer IDs, and the dependency edges are present.",
+                 "Any listed card or dependency edge is missing from the committed graph.",
+                 "root",
+             ),
         assignee=created_by,
         priority=priority,
         idempotency_key=idempotency_key,
@@ -213,7 +230,7 @@ def _create_swarm_uncommitted(
         kb.create_task(
             conn,
             title=spec.title,
-            body=(spec.body or "") + context_suffix,
+            body=spec.body + _criteria(spec.acceptance, spec.falsifier, spec.title) + context_suffix,
             assignee=spec.profile,
             parents=[root],
             priority=spec.priority or priority,
@@ -230,6 +247,13 @@ def _create_swarm_uncommitted(
             "Review every worker handoff and blackboard update. Gate the swarm: "
             "complete only with metadata {\"gate\": \"pass\"} when evidence is "
             "sufficient; otherwise block with exact missing work."
+            + _criteria(
+                "A gate=pass handoff names each worker and checks its stated observable "
+                "result against its falsifier using the worker's evidence.",
+                "Any worker has no evidence for its stated result, or its falsifier holds; "
+                "name the gap and do not pass the gate.",
+                "verifier",
+            )
             + context_suffix
         ),
         assignee=verifier_assignee,
@@ -244,6 +268,13 @@ def _create_swarm_uncommitted(
         body=(
             "Synthesize the verified worker outputs into the final deliverable. "
             "Do not start until the verifier has passed the gate."
+            + _criteria(
+                "The final deliverable addresses the swarm goal and traces each substantive "
+                "conclusion to verified worker output.",
+                "The verifier did not pass, a required conclusion is absent, or a conclusion "
+                "cannot be traced to a verified worker output.",
+                "synthesizer",
+            )
             + context_suffix
         ),
         assignee=synthesizer_assignee,
@@ -292,7 +323,10 @@ def latest_blackboard(conn: sqlite3.Connection, root_id: str) -> dict[str, Any]:
 
 
 def parse_worker_arg(raw: str) -> SwarmWorkerSpec:
-    """Parse CLI ``--worker profile:title[:skill,skill]`` values."""
+    """Parse CLI ``--worker profile:title[:skill,skill]`` values.
+
+    CLI supplies acceptance and falsifier separately, one of each per worker.
+    """
     parts = [p.strip() for p in raw.split(":", 2)]
     if len(parts) < 2:
         raise ValueError("worker must be profile:title or profile:title:skill,skill")

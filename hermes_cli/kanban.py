@@ -414,18 +414,28 @@ def _cmd_create(args: argparse.Namespace) -> int:
 
 def _cmd_swarm(args: argparse.Namespace) -> int:
     try:
-        workers = [ks.parse_worker_arg(raw) for raw in (args.worker or [])]
+        from dataclasses import replace
+        raw_workers = args.worker or []
+        if len(raw_workers) != len(args.acceptance) or len(raw_workers) != len(args.falsifier):
+            raise ValueError("provide one --acceptance and one --falsifier per --worker, in the same order")
+        workers = [
+            replace(ks.parse_worker_arg(raw), acceptance=acceptance, falsifier=falsifier)
+            for raw, acceptance, falsifier in zip(raw_workers, args.acceptance, args.falsifier)
+        ]
     except ValueError as exc:
         return _err(f"kanban swarm: {exc}", 2)
     if not workers:
         return _err("kanban swarm: at least one --worker is required", 2)
-    with kbc.connect_closing() as conn:
-        created = ks.create_swarm(
-            conn, goal=args.goal, workers=workers, verifier_assignee=args.verifier,
-            synthesizer_assignee=args.synthesizer, tenant=args.tenant,
-            created_by=args.created_by or _profile_author(), priority=args.priority,
-            idempotency_key=getattr(args, "idempotency_key", None),
-        )
+    try:
+        with kbc.connect_closing() as conn:
+            created = ks.create_swarm(
+                conn, goal=args.goal, workers=workers, verifier_assignee=args.verifier,
+                synthesizer_assignee=args.synthesizer, tenant=args.tenant,
+                created_by=args.created_by or _profile_author(), priority=args.priority,
+                idempotency_key=getattr(args, "idempotency_key", None),
+            )
+    except ValueError as exc:
+        return _err(f"kanban swarm: {exc}", 2)
     if getattr(args, "json", False):
         _print_json(created.as_dict())
     else:

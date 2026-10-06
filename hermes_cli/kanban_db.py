@@ -1406,8 +1406,15 @@ def create_task(
 
     now = int(time.time())
 
-    # Only persistent kinds inherit the board ``default_workdir``: a scratch
-    # task inheriting it would point cleanup at the user's source tree.
+    # All creation surfaces share this policy, after project inheritance.
+    if max_runtime_seconds is None:
+        from hermes_cli.kanban_db_enforcement import enforcement_config
+        max_runtime_seconds = enforcement_config().get("default_max_runtime_seconds", 3600)
+    max_runtime_seconds = _opt_int(max_runtime_seconds)
+    if max_runtime_seconds is not None and max_runtime_seconds <= 0:
+        max_runtime_seconds = None
+
+    # Only persistent kinds inherit default_workdir: scratch cleanup must not point at source.
     if workspace_path is None and project_repo is None and workspace_kind in {"dir", "worktree"}:
         board_default = _board_meta_for(board).get("default_workdir")
         if board_default:

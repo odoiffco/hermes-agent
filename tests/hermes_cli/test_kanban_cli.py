@@ -65,7 +65,7 @@ def test_kanban_show_json_includes_runtime_limit(kanban_home):
         bounded_id = kb.create_task(
             conn, title="bounded task", max_runtime_seconds=2700
         )
-        uncapped_id = kb.create_task(conn, title="uncapped task")
+        uncapped_id = kb.create_task(conn, title="uncapped task", max_runtime_seconds=0)
 
     bounded = json.loads(kc.run_slash(f"show {bounded_id} --json"))
     uncapped = json.loads(kc.run_slash(f"show {uncapped_id} --json"))
@@ -137,14 +137,17 @@ def test_kanban_edit_rejects_non_positive_runtime_bound(kanban_home):
     assert "--max-runtime must be greater than zero" in result
 
 
-def test_kanban_create_warns_when_runtime_bound_is_omitted(
+def test_kanban_create_applies_default_when_runtime_bound_is_omitted(
     kanban_home, monkeypatch,
 ):
     monkeypatch.setattr(kc, "_check_dispatcher_presence", lambda: (True, None))
 
     result = kc.run_slash("create 'unbounded task'")
 
-    assert "no runtime bound" in result.lower()
+    assert "no runtime bound" not in result.lower()
+    with kbc.connect() as conn:
+        task_id = result.split()[1]
+        assert kb.get_task(conn, task_id).max_runtime_seconds == 3600
 
 
 def test_runtime_bound_added_to_running_task_is_enforced(kanban_home, monkeypatch):

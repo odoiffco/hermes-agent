@@ -1906,6 +1906,15 @@ DEFAULT_CONFIG = {
         "review_dispatch": True,
         # Seconds between dispatcher ticks. Lower = snappier pickup; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
+        # Durable own-profile output, not heartbeats; 0 disables detection.
+        "silence_nudge_seconds": 1200,
+        # 0 enables nudge-only mode.
+        "silence_kill_seconds": 2400,
+        # Allow this many enforcement retries before a sticky operator block.
+        "productive_wall_limit": 3,
+        "silence_kill_limit": 3,
+        # Creation default only; explicit bounds win and 0 opts out.
+        "default_max_runtime_seconds": 3600,
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,
         # crashed) for the same task/profile. Reassignment resets the streak.
         "failure_limit": 2,

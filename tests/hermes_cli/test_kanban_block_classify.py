@@ -44,7 +44,12 @@ def test_typed_block_classifies_untyped_breaker_block(kanban_home, monkeypatch):
         assert kb.get_task(conn, tid).status == "ready"
         _time_out_once(conn, tid)
         parked = kb.get_task(conn, tid)
-        assert (parked.status, parked.block_kind, parked.block_recurrences) == ("blocked", None, 0)
+        assert (parked.status, parked.block_kind, parked.block_recurrences) == ("blocked", "breaker", 0)
+
+        # Legacy untyped breaker rows remain classifiable; new trips are already typed.
+        assert kb.block_task(conn, tid, reason="already typed", kind="needs_input") is False
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET block_kind=NULL WHERE id=?", (tid,))
 
         assert kb.block_task(conn, tid, reason="needs a human decision", kind="needs_input") is True
 
@@ -54,7 +59,7 @@ def test_typed_block_classifies_untyped_breaker_block(kanban_home, monkeypatch):
         assert after.last_failure_error == parked.last_failure_error
         assert after.current_run_id is None
         kinds = [e.kind for e in kb.list_events(conn, tid)]
-        assert (kinds.count("blocked"), kinds.count("gave_up"), kinds.count("timed_out")) == (1, 1, 2)
+        assert (kinds.count("blocked"), kinds.count("gave_up"), kinds.count("timed_out")) == (2, 1, 2)
         assert len(kb.list_runs(conn, tid)) == 2
 
 
@@ -71,7 +76,7 @@ def test_typed_block_still_refuses_typed_or_live_blocked_cards(kanban_home, monk
         # A worker asserting ownership of its (ended) run cannot classify a parked card.
         assert kb.block_task(conn, parked, reason="mine", kind="needs_input",
                              expected_run_id=stale_run_id) is False
-        assert kb.get_task(conn, parked).block_kind is None
+        assert kb.get_task(conn, parked).block_kind == "breaker"
 
         typed = kb.create_task(conn, title="typed once", assignee="worker")
         kb.claim_task(conn, typed)

@@ -567,6 +567,13 @@ class _KanbanNotification:
 
     def format_event(self, ev: Any) -> Optional[str]:
         """Render one event; accumulates wake handoff/review detail. None → silent kind."""
+        # Breaker trips now carry both audit events in one transaction. Keep the
+        # richer gave_up message, not a second push for the same transition.
+        if ev.kind == "blocked" and (ev.payload or {}).get("kind") == "breaker":
+            if any(other.kind == "gave_up" and other.created_at == ev.created_at
+                   and (other.payload or {}).get("trigger_outcome") == ev.payload.get("trigger_outcome")
+                   for other in self.d["events"]):
+                return None
         formatter = _EVENT_FORMATTERS.get(ev.kind)
         if formatter is None:
             return None

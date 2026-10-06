@@ -26,6 +26,7 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+from hermes_cli.kanban_db_enforcement import enforcement_config, durable_output_count, enforcement_count
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -135,6 +136,8 @@ class DispatchResult:
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    nudged: list[str] = field(default_factory=list)
+    silence_killed: list[str] = field(default_factory=list)
     stale: list[str] = field(default_factory=list)
     """Task ids reclaimed for no heartbeat within ``dispatch_stale_timeout_seconds``."""
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
@@ -645,6 +648,85 @@ def heartbeat_worker(
     return True
 
 
+def detect_silent_running(conn: sqlite3.Connection, *, nudge_seconds, kill_seconds,
+                          signal_fn=None) -> list[tuple[str, str]]:
+    """Advance at most one silence stage per task/tick; heartbeat events do not count."""
+    if nudge_seconds <= 0:
+        return []
+    now = int(time.time())
+    transitions = []
+    cap = int(enforcement_config().get("silence_kill_limit", 3))
+    rows = conn.execute(
+        "SELECT t.id, t.worker_pid, t.worker_started_at, t.claim_lock, t.current_run_id, "
+        "r.profile, COALESCE(r.started_at, t.started_at) AS active_started_at "
+        "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.status = 'running' AND t.worker_pid IS NOT NULL "
+        "AND COALESCE(r.started_at, t.started_at) IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        if not (row["claim_lock"] or "").startswith(_kb._host_prefix()):
+            continue
+        tid, run_id = row["id"], row["current_run_id"]
+        elapsed = now - int(row["active_started_at"])
+        if elapsed < nudge_seconds:
+            continue
+        if durable_output_count(conn, tid, row["profile"], row["active_started_at"], now):
+            continue
+        nudged = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND run_id IS ? AND kind = 'silence_nudged'",
+            (tid, run_id),
+        ).fetchone()
+        if not nudged:
+            with _kb.write_txn(conn):
+                _kb._insert_comment(conn, tid, "dispatcher",
+                    f"dispatcher: this run has been active {elapsed}s with no durable output "
+                    "(comment/attachment). Post what you have NOW as a comment, even if incomplete.", now)
+                _kb._append_event(conn, tid, "silence_nudged",
+                    {"run_id": run_id, "elapsed_seconds": elapsed}, run_id=run_id)
+            transitions.append((tid, "silence_nudged"))
+            continue
+        if kill_seconds <= 0 or elapsed < kill_seconds:
+            continue
+        pid, fingerprint = int(row["worker_pid"]), row["worker_started_at"]
+        if fingerprint == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
+            continue
+        # Fingerprint checks can take time; spare a response that arrived since
+        # the initial scan. Never use our own nudge as proof of productivity.
+        if durable_output_count(conn, tid, row["profile"], row["active_started_at"], int(time.time())):
+            continue
+        killed = False
+        kill = _kill_fn(signal_fn)
+        if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, fingerprint)):
+            with contextlib.suppress(ProcessLookupError, OSError):
+                kill(pid, signal.SIGTERM)
+            _poll_worker_exit(pid, fingerprint)
+            if _worker_alive(pid, fingerprint):
+                killed = _sigkill(kill, pid)
+        error = f"silent {elapsed}s ≥ {kill_seconds}s after nudge"
+        prior = enforcement_count(conn, tid, "silence_killed")
+        with _kb.write_txn(conn):
+            retry_status = _kb._retry_status_for_run(conn, tid)
+            cur = conn.execute(
+                "UPDATE tasks SET status = ?, claim_lock = NULL, claim_expires = NULL, "
+                "worker_pid = NULL, worker_started_at = NULL, last_heartbeat_at = NULL "
+                "WHERE id = ? AND status = 'running' AND current_run_id IS ? "
+                "AND worker_pid = ? AND claim_lock IS ?",
+                (retry_status, tid, run_id, pid, row["claim_lock"]),
+            )
+            if cur.rowcount != 1:
+                continue
+            payload = {"pid": pid, "elapsed_seconds": elapsed, "nudge_seconds": nudge_seconds,
+                       "kill_seconds": kill_seconds, "sigkill": killed, "retry_status": retry_status}
+            _kb._end_run(conn, tid, outcome="silence_killed", status="silence_killed",
+                         error=error, metadata=payload)
+            _kb._append_event(conn, tid, "silence_killed", payload, run_id=run_id)
+        _record_task_failure(conn, tid, error=error, outcome="silence_killed",
+                             infrastructure=True, force_trip=prior >= cap,
+                             event_payload_extra=payload)
+        transitions.append((tid, "silence_killed"))
+    return transitions
+
+
 def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
     """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
 
@@ -660,7 +742,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, t.worker_started_at, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
-        "       t.max_runtime_seconds, t.claim_lock "
+        "       t.max_runtime_seconds, t.claim_lock, r.profile "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
         "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
@@ -701,6 +783,10 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 killed = _sigkill(kill, pid)
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
+        interim_count = durable_output_count(conn, tid, row["profile"], row["active_started_at"], int(time.time()))
+        productive = interim_count > 0
+        prior = enforcement_count(conn, tid, "timed_out", productive=True) if productive else 0
+        cap = int(enforcement_config().get("productive_wall_limit", 3))
         with _kb.write_txn(conn):
             retry_status = _kb._retry_status_for_run(conn, tid)
             cur = conn.execute(
@@ -718,6 +804,8 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                     "limit_seconds": limit,
                     "sigkill": killed,
                     "retry_status": retry_status,
+                    "productive_wall": productive,
+                    "interim_comment_count": interim_count,
                 }
                 run_id = _kb._end_run(
                     conn, tid, outcome="timed_out", status="timed_out",
@@ -733,9 +821,11 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 conn, tid,
                 error=error,
                 outcome="timed_out",
+                infrastructure=productive,
+                force_trip=productive and prior >= cap,
                 release_claim=False,
                 end_run=False,
-                event_payload_extra={"pid": pid, "sigkill": killed, "retry_status": retry_status},
+                event_payload_extra=payload,
             )
     return timed_out
 
@@ -1367,10 +1457,9 @@ def _record_task_failure(
     ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``. ``force_trip`` trips
     unconditionally (caller applied its own bounded-retry policy).
 
-    ``infrastructure=True``: the host refused the spawn (no restart-safe scope,
-    #114720) — nothing about the card ran, so the run and event are recorded
-    with ``infrastructure: true`` but ``consecutive_failures`` is left alone and
-    the breaker never trips; the card stays retryable and
+    ``infrastructure=True``: host refusal or enforcement, not a card failure;
+    ``consecutive_failures`` is left alone. Only an explicit ``force_trip``
+    (an independent enforcement budget) can block it; otherwise it stays retryable and
     :func:`check_respawn_guard` spaces the retries.
     """
     if failure_limit is None:
@@ -1397,7 +1486,7 @@ def _record_task_failure(
         else:
             effective_limit, limit_source = int(failure_limit), "dispatcher"
 
-        if infrastructure or not (force_trip or failures >= effective_limit):
+        if not force_trip and (infrastructure or failures < effective_limit):
             if release_claim:
                 # Spawn path: restore the claimed source phase + clear claim.
                 conn.execute(
@@ -1427,7 +1516,7 @@ def _record_task_failure(
         # Spawn path (release_claim) is still running and also clears claim
         # state; the timeout/crash path already did.
         conn.execute(
-            "UPDATE tasks SET status = 'blocked', "
+            "UPDATE tasks SET status = 'blocked', block_kind = 'breaker', "
             + ("claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                if release_claim else "")
             + "consecutive_failures = ?, last_failure_error = ? "
@@ -1462,6 +1551,11 @@ def _record_task_failure(
         if event_payload_extra:
             payload.update(event_payload_extra)
         _kb._append_event(conn, task_id, "gave_up", payload, run_id=run_id)
+        _kb._append_event(conn, task_id, "blocked", {
+            "kind": "breaker", "reason": error, "trigger_outcome": outcome,
+            "failures": failures, "effective_limit": effective_limit,
+            "retry_status": retry_status,
+        }, run_id=run_id)
         return True
 
 
@@ -2202,6 +2296,12 @@ def _run_reclaim_phase(
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
     result.timed_out = enforce_max_runtime(conn)
+    cfg = enforcement_config()
+    for tid, stage in detect_silent_running(
+        conn, nudge_seconds=int(cfg.get("silence_nudge_seconds", 1200)),
+        kill_seconds=int(cfg.get("silence_kill_seconds", 2400)),
+    ):
+        (result.nudged if stage == "silence_nudged" else result.silence_killed).append(tid)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 
 

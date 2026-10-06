@@ -3904,6 +3904,103 @@ def invalidate_descendants_for_parent_reopen(
     return {"invalidated": invalidated, "terminations": terminations}
 
 
+def _supersede_disposition(conn: sqlite3.Connection, anchor_id: str) -> list[sqlite3.Row]:
+    """Resolve anchor + descendants in deterministic reverse-topological order."""
+    import heapq
+
+    rows = conn.execute(
+        """WITH RECURSIVE family(id) AS (
+            SELECT id FROM tasks WHERE id = ?
+            UNION
+            SELECT l.child_id FROM task_links l JOIN family f ON f.id = l.parent_id
+        ) SELECT t.* FROM tasks t JOIN family f ON f.id = t.id ORDER BY t.id""",
+        (anchor_id,),
+    ).fetchall()
+    by_id = {row["id"]: row for row in rows}
+    parents = {tid: [] for tid in by_id}
+    remaining = {tid: 0 for tid in by_id}
+    for edge in conn.execute("SELECT parent_id, child_id FROM task_links"):
+        parent, child = edge["parent_id"], edge["child_id"]
+        if parent in by_id and child in by_id:
+            parents[child].append(parent)
+            remaining[parent] += 1
+    leaves = [tid for tid, count in remaining.items() if count == 0]
+    heapq.heapify(leaves)
+    ordered = []
+    while leaves:
+        tid = heapq.heappop(leaves)
+        ordered.append(by_id[tid])
+        for parent in parents[tid]:
+            remaining[parent] -= 1
+            if remaining[parent] == 0:
+                heapq.heappush(leaves, parent)
+    if len(ordered) != len(rows):
+        raise ValueError("supersede family contains a dependency cycle")
+    return ordered
+
+
+def supersede_family(
+    conn: sqlite3.Connection, anchor_id: str, *, reason: str, author: str,
+) -> dict:
+    """Stamp and archive anchor + descendants atomically, dependents first.
+
+    Scope follows dependency edges, NOT decomposition membership: an umbrella
+    does not include its ancestors, nor does a child include parallel siblings.
+    A done/archived anchor is a no-op even if it has live descendants; choose a
+    live upstream anchor to dispose those. Owns its transaction so worker kills
+    and workspace cleanup occur only after a durable commit.
+    """
+    if not reason or not reason.strip():
+        raise ValueError("supersede requires a non-empty reason")
+    result = {"ok": True, "anchor": anchor_id, "stamped": [], "archived": [], "left_terminal": []}
+    terminations = []
+    with write_txn(conn):
+        rows = _supersede_disposition(conn, anchor_id)
+        if not rows:
+            return {"ok": False, "reason": f"unknown task {anchor_id}"}
+        anchor = next(row for row in rows if row["id"] == anchor_id)
+        if anchor["status"] in {"done", "archived"}:
+            return {**result, "no_op": True}
+        stamp = (
+            f"SUPERSEDED (family anchor {anchor_id}) — {reason}. This card's inherited body "
+            "may carry lines a later decision overrode; treat this stamp as authoritative "
+            "over any contradicting body line."
+        )
+        now = int(time.time())
+        for row in rows:
+            tid = row["id"]
+            _insert_comment(conn, tid, author, stamp, now)
+            _append_event(conn, tid, "commented", {"author": author, "len": len(stamp)})
+            result["stamped"].append(tid)
+        # Keep this mutation aligned with archive_task; never call it here:
+        # its per-card commit/recompute would release superseded dependents.
+        for row in rows:
+            tid = row["id"]
+            if row["status"] in {"done", "archived"}:
+                result["left_terminal"].append({"id": tid, "status": row["status"]})
+                continue
+            conn.execute(
+                "UPDATE tasks SET status = 'archived', claim_lock = NULL, claim_expires = NULL, "
+                "worker_pid = NULL, worker_started_at = NULL WHERE id = ?", (tid,),
+            )
+            run_id = _end_run(
+                conn, tid, outcome="reclaimed", status="reclaimed",
+                summary="task archived with run still active",
+            )
+            _append_event(conn, tid, "archived", None, run_id=run_id)
+            result["archived"].append(tid)
+            if row["status"] == "running":
+                terminations.append((tid, row["worker_pid"], row["claim_lock"], row["worker_started_at"], run_id))
+    for tid, pid, lock, started, run_id in terminations:
+        termination = _terminate_reclaimed_worker(pid, lock, started_at=started)
+        with write_txn(conn):
+            _append_event(conn, tid, "archive_worker_termination", termination, run_id=run_id)
+    for tid in result["archived"]:
+        _cleanup_workspace(conn, tid)
+    recompute_ready(conn)
+    return result
+
+
 def specify_triage_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,

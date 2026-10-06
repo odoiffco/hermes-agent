@@ -68,11 +68,51 @@ def test_worker_context_visibility(board, bound):
     lines = []
     kb._ctx_header(lines, kb.get_task(board, tid))
     text = "\n".join(lines)
+    assert text.count("Silence policy:") == 1
     if bound:
         assert "Max runtime: 3600s" in text
         assert "UNBOUNDED" not in text
     else:
         assert "Max runtime: UNBOUNDED (explicit opt-out or legacy row) — no wall, no failure accounting" in text
+
+
+@pytest.mark.parametrize("policy,required,forbidden", [
+    ({}, "nudge at 1200s with no durable output, kill at 2400s", "nudge-only"),
+    ({"silence_nudge_seconds": 71, "silence_kill_seconds": 0}, "nudge at 71s", "kill at"),
+    ({"silence_nudge_seconds": 0, "silence_kill_seconds": 2400}, "Silence policy: disabled", "kill at"),
+    ({"silence_nudge_seconds": 0, "silence_kill_seconds": 0}, "Silence policy: disabled", "nudge at"),
+    ({"silence_nudge_seconds": 91, "silence_kill_seconds": 181, "silence_kill_limit": 5},
+     "after 5 prior silence kills on this task the next kill", "after 3 prior"),
+])
+def test_context_silence_policy(board, monkeypatch, policy, required, forbidden):
+    from hermes_cli import kanban_db_enforcement as enforcement
+    monkeypatch.setattr(enforcement, "enforcement_config", lambda: policy)
+    tid = kb.create_task(board, title="policy", assignee="default", max_runtime_seconds=3600)
+    lines = []
+    kb._ctx_header(lines, kb.get_task(board, tid))
+    text = "\n".join(lines)
+    assert text.count("Silence policy:") == 1
+    assert required in text
+    assert forbidden not in text
+    if policy.get("silence_nudge_seconds", 1200) > 0 and policy.get("silence_kill_seconds", 2400) <= 0:
+        assert "nudge-only" in text
+
+
+def test_context_silence_config_failure_falls_back(board, monkeypatch):
+    from hermes_cli import kanban_db_enforcement as enforcement
+    tid = kb.create_task(board, title="fallback", assignee="default", max_runtime_seconds=3600)
+
+    def broken():
+        raise RuntimeError("unavailable config")
+
+    monkeypatch.setattr(enforcement, "enforcement_config", broken)
+    lines = []
+    kb._ctx_header(lines, kb.get_task(board, tid))
+    text = "\n".join(lines)
+    assert text.count("Silence policy:") == 1
+    assert "nudge at 1200s" in text
+    assert "kill at 2400s" in text
+    assert "after 3 prior silence kills on this task the next kill" in text
 
 
 def test_runtime_config_remains_profile_scoped(board, tmp_path):
@@ -92,7 +132,7 @@ def test_runtime_config_remains_profile_scoped(board, tmp_path):
 
 def test_guidance_requires_bound_and_echo_check():
     from agent.prompt_builder import KANBAN_GUIDANCE
-    lifecycle = KANBAN_GUIDANCE.split("6. **If follow-up work appears", 1)[1].split("7. **Flag collision", 1)[0]
+    lifecycle = KANBAN_GUIDANCE.split("7. **If follow-up work appears", 1)[1].split("8. **Flag collision", 1)[0]
     assert "**State a bound.** You MUST pass `max_runtime_seconds`" in lifecycle
     assert 'max_runtime_source: "default"' in lifecycle
     reference = KANBAN_GUIDANCE.split("- **Created cards.**", 1)[1].split("- **Orchestrating:", 1)[0]

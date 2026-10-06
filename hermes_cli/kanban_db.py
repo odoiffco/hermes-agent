@@ -4307,6 +4307,29 @@ def _ctx_header(lines: list[str], task: Task) -> None:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
     else:
         lines.append("Max runtime: UNBOUNDED (explicit opt-out or legacy row) — no wall, no failure accounting")
+    try:
+        from hermes_cli.kanban_db_enforcement import enforcement_config
+        policy = enforcement_config()
+        nudge = int(policy.get("silence_nudge_seconds", 1200))
+        kill = int(policy.get("silence_kill_seconds", 2400))
+        limit = int(policy.get("silence_kill_limit", 3))
+    except Exception:
+        nudge, kill, limit = 1200, 2400, 3
+    if nudge <= 0:
+        silence = "disabled — no silence nudge or kill is configured; the card's max runtime above is your only wall."
+    elif kill <= 0:
+        silence = (
+            "first durable output (comment/attachment) due within 600s of run start — "
+            f"nudge at {nudge}s with no durable output; kill disabled (nudge-only mode)."
+        )
+    else:
+        silence = (
+            "first durable output (comment/attachment) due within 600s of run start — "
+            f"nudge at {nudge}s with no durable output, kill at {kill}s if still silent. "
+            "A kill re-queues the task, charged to infrastructure (not your failure budget); "
+            f"after {limit} prior silence kills on this task the next kill trips the sticky breaker (task blocked)."
+        )
+    lines.append(f"Silence policy: {silence}")
     if task.branch_name:
         lines.append(f"Branch:   {task.branch_name}")
     lines.append("")

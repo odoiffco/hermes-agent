@@ -216,6 +216,7 @@ def test_t16_creation_default(env):
 def test_t17_guidance():
     from agent.prompt_builder import KANBAN_GUIDANCE
     assert "max_runtime_seconds" in KANBAN_GUIDANCE
+    assert "Declare intent durably" in KANBAN_GUIDANCE
 
 
 def test_t18_foreign_host(env):

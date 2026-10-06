@@ -1407,12 +1407,8 @@ def create_task(
     now = int(time.time())
 
     # All creation surfaces share this policy, after project inheritance.
-    if max_runtime_seconds is None:
-        from hermes_cli.kanban_db_enforcement import enforcement_config
-        max_runtime_seconds = enforcement_config().get("default_max_runtime_seconds", 3600)
-    max_runtime_seconds = _opt_int(max_runtime_seconds)
-    if max_runtime_seconds is not None and max_runtime_seconds <= 0:
-        max_runtime_seconds = None
+    from hermes_cli.kanban_db_enforcement import creation_runtime_bound
+    max_runtime_seconds, max_runtime_source = creation_runtime_bound(max_runtime_seconds)
 
     # Only persistent kinds inherit default_workdir: scratch cleanup must not point at source.
     if workspace_path is None and project_repo is None and workspace_kind in {"dir", "worktree"}:
@@ -1469,6 +1465,8 @@ def create_task(
                         "status": task_status,
                         "parents": list(parents),
                         "creator_task_id": creator_task_id,
+                        "max_runtime_seconds": max_runtime_seconds,
+                        "max_runtime_source": max_runtime_source,
                         "tenant": tenant,
                         "workspace_kind": workspace_kind,
                         "workspace_path": workspace_path,
@@ -4151,6 +4149,8 @@ def _ctx_header(lines: list[str], task: Task) -> None:
         lines.append(f"Max runtime: {task.max_runtime_seconds}s")
         if effective_terminal_timeout:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
+    else:
+        lines.append("Max runtime: UNBOUNDED (explicit opt-out or legacy row) — no wall, no failure accounting")
     if task.branch_name:
         lines.append(f"Branch:   {task.branch_name}")
     lines.append("")

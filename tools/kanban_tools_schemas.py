@@ -467,7 +467,10 @@ KANBAN_CREATE_SCHEMA = _schema(
         "max_runtime_seconds": _prop("integer", (
                 "Per-task runtime cap. When exceeded, the "
                 "dispatcher SIGTERMs the worker and re-queues the "
-                "task with outcome='timed_out'."
+                "task with outcome='timed_out'. REQUIRED by convention: state a bound sized to the work. "
+                "Omitting it applies kanban.default_max_runtime_seconds (3600 by default) and records "
+                "max_runtime_source='default' against your lane. Pass 0 only for a deliberate opt-out "
+                "(the card stays unbounded and visibly flagged)."
         )),
         "initial_status": {
             "type": "string",

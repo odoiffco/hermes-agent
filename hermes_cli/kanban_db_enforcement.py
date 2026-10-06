@@ -7,6 +7,21 @@ def enforcement_config() -> dict:
     return (load_config_readonly() or {}).get("kanban", {}) or {}
 
 
+def creation_runtime_bound(value=None) -> tuple:
+    """Resolve the shared insertion policy and retain the creator's intent."""
+    from hermes_cli.kanban_db import _opt_int
+
+    source = "default" if value is None else "explicit"
+    if value is None:
+        value = enforcement_config().get("default_max_runtime_seconds", 3600)
+    value = _opt_int(value)
+    if value is not None and value <= 0:
+        value = None
+        if source == "explicit":
+            source = "opt_out"
+    return value, source
+
+
 def durable_output_count(conn, task_id, profile, started_at, now) -> int:
     return conn.execute(
         "SELECT (SELECT COUNT(*) FROM task_comments WHERE task_id = ? AND author = ? "

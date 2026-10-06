@@ -196,19 +196,26 @@ def _insert_decomposed_child(
         child_ws_path = None
     new_id = _new_task_id()
     body = child.get("body")
+    from hermes_cli.kanban_db_enforcement import creation_runtime_bound
+    max_runtime_seconds, max_runtime_source = creation_runtime_bound()
     conn.execute(
         "INSERT INTO tasks "
         "(id, title, body, assignee, status, workspace_kind, "
-        " workspace_path, tenant, created_at, created_by) "
-        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+        " workspace_path, tenant, created_at, created_by, max_runtime_seconds) "
+        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
         (
             new_id, child["title"].strip(), body if isinstance(body, str) else None,
             _canonical_assignee(child.get("assignee")), child_ws_kind, child_ws_path,
             root_row["tenant"], now, (author or "decomposer"),
+            max_runtime_seconds,
         ),
     )
     _append_event(
-        conn, new_id, "created", {"by": author or "decomposer", "from_decompose_of": root_id},
+        conn, new_id, "created", {
+            "by": author or "decomposer", "from_decompose_of": root_id,
+            "max_runtime_seconds": max_runtime_seconds,
+            "max_runtime_source": max_runtime_source,
+        },
     )
     inherit_creator_origin(conn, new_id, root_id, created_at=now)
     return new_id

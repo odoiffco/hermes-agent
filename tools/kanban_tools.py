@@ -430,7 +430,7 @@ _COMMENT_FIELDS = ("author", "body", "created_at")
 _EVENT_FIELDS = ("kind", "payload", "created_at", "run_id")
 _ATTACHMENT_FIELDS = tuple(
     "id filename content_type size uploaded_by stored_path created_at".split())
-_CREATED_FIELDS = ("status", "workspace_kind", "workspace_path", "project_id")
+_CREATED_FIELDS = ("status", "workspace_kind", "workspace_path", "project_id", "max_runtime_seconds")
 
 
 def _fields(obj: Any, names: tuple[str, ...]) -> dict[str, Any]:
@@ -1149,7 +1149,12 @@ def _handle_create(args: dict, **kw) -> str:
             initial_status=str(args.get("initial_status") or "running"),
             created_by=_persisted_identity(), session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
-        wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
+        events = kb.list_events(conn, new_tid)
+        created = next((e for e in events if e.kind == "created"), None)
+        # Idempotency can return an existing card: report its original intent,
+        # not the arguments of this later request (legacy events have no source).
+        landed["max_runtime_source"] = created.payload.get("max_runtime_source") if created else None
+        wait = [e for e in events if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
         return _ok(task_id=new_tid, **landed, **gate,
                    subscribed=_maybe_auto_subscribe(conn, new_tid))

@@ -13,6 +13,14 @@ from hermes_cli import kanban_secret_hydration as hydration
 
 @pytest.fixture
 def board(tmp_path, monkeypatch):
+    # Some neighboring suites evict hermes_cli modules. Resolve a coherent
+    # module family at execution time so patches reach production's late imports.
+    import importlib
+    global kb, kbc, dispatch, hydration
+    kb = importlib.import_module("hermes_cli.kanban_db")
+    kbc = importlib.import_module("hermes_cli.kanban_db_connect")
+    dispatch = importlib.import_module("hermes_cli.kanban_db_dispatch")
+    hydration = importlib.import_module("hermes_cli.kanban_secret_hydration")
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))

@@ -2185,6 +2185,18 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
     # Breaker blocked events are observability, not an explicit operator hold.
     # Ordinary trips stay counter-judged; force trips use gave_up.sticky below.
+    # Dispatcher-owned hydration holds are never promoted by dependency recompute.
+    # Only a successful, bounded probe (or an explicit unblock) releases them.
+    hydration = conn.execute(
+        "SELECT id FROM task_events WHERE task_id = ? "
+        "AND kind = 'secret_hydration_unavailable' ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if hydration and conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'unblocked' "
+        "AND id > ? LIMIT 1", (task_id, hydration["id"]),
+    ).fetchone() is None:
+        return True
     trip = conn.execute(
         "SELECT payload FROM task_events "
         "WHERE task_id = ? AND kind = 'gave_up' AND id > COALESCE("

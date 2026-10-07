@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
-from hermes_cli.kanban_db_graph import decompose_triage_task
+from hermes_cli.kanban_db_graph import decompose_triage_task, decomposition_hold_reason
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles as profiles_mod
 from hermes_cli.kanban_specify import (
@@ -208,6 +208,8 @@ class _Routing:
     auto_promote: bool
     roster: list[dict]
     valid_names: set[str]
+    parent_assignee: Optional[str] = None
+    coordination_profile: Optional[str] = None
 
 
 def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
@@ -224,6 +226,8 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
         auto_promote=bool(kanban_cfg.get("auto_promote_children", True)),
         roster=roster,
         valid_names=valid_names,
+        parent_assignee=root_assignee,
+        coordination_profile=(kanban_cfg.get("orchestrator_profile") or "").strip() or None,
     )
 
 
@@ -273,6 +277,12 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
                 "routing to default_assignee %r",
                 task_id, idx, assignee, routing.default_assignee,
             )
+        if chosen == routing.coordination_profile:
+            # The roll-up lane coordinates; it is not an implementation fallback.
+            owner = routing.parent_assignee
+            if owner not in routing.valid_names or owner == routing.coordination_profile:
+                return [], f"tasks[{idx}]: orchestrator child has no executing parent assignee"
+            chosen = owner
         parents = entry.get("parents") or []
         if not isinstance(parents, list):
             parents = []
@@ -328,6 +338,11 @@ def decompose_task(
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
 
+    with kbc.connect_closing() as conn:
+        hold = decomposition_hold_reason(conn, task_id)
+    if hold:
+        return DecomposeOutcome(task_id, False, hold)
+
     routing = _load_routing(root_assignee=task.assignee)
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
@@ -355,7 +370,7 @@ def decompose_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+    """Return decomposable triage ids; human decision holds do not consume tick slots."""
     with kbc.connect_closing() as conn:
         rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
-    return [row.id for row in rows]
+        return [row.id for row in rows if not decomposition_hold_reason(conn, row.id)]

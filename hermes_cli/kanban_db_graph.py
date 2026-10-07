@@ -1,9 +1,30 @@
 """Task graph initialization and atomic decomposition persistence."""
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 from typing import Any, Optional
+
+
+_DECISION_MARKER = re.compile(r"\bDECISION\s*=", re.IGNORECASE)
+
+
+def decomposition_hold_reason(conn: sqlite3.Connection, task_id: str) -> str:
+    """Human decision records must not be replaced by an aux-generated premise.
+
+    Unblock-loop escalation retains block_kind in triage. Comments are not
+    copied to generated children, so even a decided card is unsafe to re-cut:
+    leave it for its assigned worker to read and honor the recorded decision.
+    """
+    row = conn.execute("SELECT block_kind FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is not None and row["block_kind"] == "needs_input":
+        return "needs_input requires a human decision, not decomposition"
+    for comment in conn.execute("SELECT body FROM task_comments WHERE task_id = ?", (task_id,)):
+        if _DECISION_MARKER.search(comment["body"]):
+            return "recorded DECISION comment requires the assigned worker, not decomposition"
+    return ""
+
 
 def inherit_creator_origin(
     conn: sqlite3.Connection, task_id: str, creator_task_id: Optional[str], *,
@@ -119,6 +140,10 @@ def decompose_triage_task(
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if root_row is None or root_row["status"] != "triage":
+            return None
+        # Recurrence escalation is human triage, not a new decomposition request.
+        # Check under the write lock: a decision can become missing during the aux call.
+        if decomposition_hold_reason(conn, task_id):
             return None
         # Dependency links alone do not imply lineage. The completion event is
         # committed with the graph, and survives re-triage or unlinking.

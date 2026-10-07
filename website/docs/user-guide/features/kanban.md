@@ -859,6 +859,14 @@ The kanban board has two ways to handle a task you drop into the Triage column:
 
 **Auto (default)** — `kanban.auto_decompose: true`. The gateway-embedded dispatcher runs the **decomposer** on each tick, capped by `kanban.auto_decompose_per_tick` (default 3 tasks per tick) so a bulk-load of triage tasks doesn't burst-spend the auxiliary LLM. The decomposer uses the built-in decomposition prompt plus the `auxiliary.kanban_decomposer` model path, reads your installed profiles + their descriptions, and asks the LLM to produce a JSON task graph: which tasks to spawn, who they go to, and which depend on which. The original triage task becomes the parent of every leaf in the graph, so it stays alive until the whole graph completes - and then promotes back to `ready` so its assignee (`kanban.orchestrator_profile`, else the assignee the task already had, else the active default profile) can judge completion and add more tasks if the work isn't done. This is the "drop a one-liner, walk away" flow.
 
+Human decision holds are not decomposition requests. A Triage card retaining
+`block_kind=needs_input` after unblock-loop escalation is skipped, as is a card
+with a `DECISION=…` marker in its comment thread. The same holds apply to manual
+built-in decomposition. No children are created or parked, and skipped cards do
+not consume the per-tick attempt budget. Decision-bearing cards remain with their
+assigned worker/operator: generated child bodies do not inherit comments and
+must not manufacture approval or authorization from an incomplete prompt.
+
 A completed built-in fan-out is recorded atomically with its child graph. Moving
 that root back to Triage does not create another graph; ordinary prerequisite
 links do not prevent a task's first decomposition. The completion marker survives
@@ -877,7 +885,7 @@ Flip between the two modes from the **Orchestration: Auto/Manual** pill at the t
 
 The decomposer's routing decisions depend on profile descriptions, which is a per-profile labeling primitive you set with `hermes profile create --description "..."`, `hermes profile describe <name> --text "..."`, `hermes profile describe <name> --auto` (LLM-generates from the profile's installed skills + model), or the dashboard's per-profile editor in the expanded **Orchestration settings** panel. Profiles without a description still appear in the roster — they're routable by name, just less precisely. The decomposer NEVER lands a child task with `assignee=None`: when the LLM picks an unknown profile, the child gets routed to `kanban.default_assignee`, else the root task's assignee (if it names an existing profile), else the active default profile.
 
-`kanban.orchestrator_profile` does not load that profile's prompt, skills, or custom logic into the decomposition call. It controls who owns the root/orchestration task after fan-out. To change the decomposer's model/provider, configure `auxiliary.kanban_decomposer`. To use a profile's custom task-splitting logic instead of the built-in decomposer, switch to Manual mode and have that profile create or decompose tasks explicitly.
+`kanban.orchestrator_profile` does not load that profile's prompt, skills, or custom logic into the decomposition call. It controls who owns the root/orchestration task after fan-out. A generated child's choice resolving to that explicitly configured coordination lane instead inherits the original root assignee, if it names a distinct installed profile; without that executing owner, the graph is refused rather than dispatched to the router. Other explicit `default_assignee` fallbacks remain authoritative. To change the decomposer's model/provider, configure `auxiliary.kanban_decomposer`. To use a profile's custom task-splitting logic instead of the built-in decomposer, switch to Manual mode and have that profile create or decompose tasks explicitly.
 
 Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 

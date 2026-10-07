@@ -53,14 +53,42 @@ def test_default_rows_are_legacy_shape_and_opt_in_is_explicit(board):
     # Same-row pre-append envelope: compare bytes, not a historical different board.
     old_envelope = dict(tasks=legacy, count=167, limit=167, truncated=True,
                         next_limit=200, promoted=plain['promoted'])
-    default_bytes = len(raw({'status': 'done', 'limit': 167}).encode())
-    legacy_bytes = len(json.dumps(old_envelope).encode())
-    assert default_bytes <= legacy_bytes
+    default_text = raw({'status': 'done', 'limit': 167})
+    measured = json.loads(default_text)
+    assert measured['tasks'] == legacy
+    cursor_fields = {'has_more', 'next_offset'}
+    assert set(measured) - set(old_envelope) == cursor_fields
+    assert {k: v for k, v in measured.items() if k not in cursor_fields} == old_envelope
+    default_bytes = len(default_text.encode())
+    legacy_bytes = len(json.dumps(old_envelope, separators=(',', ':')).encode())
+    cursor_bytes = len(json.dumps({k: measured[k] for k in sorted(cursor_fields)},
+                                 separators=(',', ':')).encode()) - len('{}') + len(',')
+    assert default_bytes - legacy_bytes == cursor_bytes
+    assert cursor_bytes < 64
     print(json.dumps({'evidence_class': 'development fixture, not live acceptance',
                       'rows': 167, 'default_bytes': default_bytes,
                       'pre_append_same_row_bytes': legacy_bytes,
+                      'cursor_envelope_bytes': cursor_bytes,
+                      'row_shape_identical': True,
                       'opt_in_bytes': len(raw({'status': 'done', 'limit': 167,
                                                'include_block_fields': True}).encode())}))
+
+
+@pytest.mark.parametrize('limit', [1, 50, 167])
+def test_cursor_envelope_growth_is_independent_of_row_count(board, limit):
+    # Vary row count while keeping the cursor value fixed: only two envelope
+    # fields may grow the payload, never a per-row metadata tax.
+    text = raw({'status': 'done', 'limit': limit, 'offset': 167 - limit})
+    page = json.loads(text)
+    assert page['count'] == len(page['tasks']) == limit
+    assert page['has_more'] is True
+    assert page['next_offset'] == 167
+    legacy = {k: v for k, v in page.items() if k not in {'has_more', 'next_offset'}}
+    legacy_text = json.dumps(legacy, separators=(',', ':'))
+    extra = ',"has_more":true,"next_offset":167'
+    assert len(text.encode()) - len(legacy_text.encode()) == len(extra.encode())
+    assert all(not {'block_kind', 'block_recurrences', 'latest_block'}.intersection(row)
+               for row in page['tasks'])
 
 
 def test_offset_enumerates_past_max_and_count_matches(board):

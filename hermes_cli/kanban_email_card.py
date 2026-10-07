@@ -177,3 +177,15 @@ def parse_decision_block(body: str) -> DecisionBlock | DecisionRefusal:
         return DecisionBlock(**strings, options=tuple(options))
     except _Invalid as exc:
         return exc.refusal
+
+
+# Additive public envelope API; the established decision API above is unchanged.
+from hermes_cli.kanban_email_envelope import (
+    ACTION_FENCES, ACTING_COUNT_KEYS, ATTENTION_KEYS, BASE64_PERMITTED_PATHS,
+    COUNTER_FIELDS, COUNT_KEYS, FENCE_KEYS, FORBIDDEN_CONTENT_KEYS,
+    RECORD_GROUP_PATHS, REQUIRED_PATHS, STANDING_FENCES,
+    ContentCheckContext, ContentIssue, EmailCard, EmailCardEnvelope,
+    EmailCardRefusal, EmailEvidence, EmailItem, EmailOperation, EmailReceipts,
+    EmailVerification, inspect_email_card, parse_email_card,
+    required_field_issues, required_paths, scan_email_content,
+)

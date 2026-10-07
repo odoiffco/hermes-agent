@@ -122,6 +122,10 @@ _BOARD_SPECS = [
         _SLUG,
         _arg("path", nargs="?", help="Absolute path to use as default workdir. Omit to clear."),
     ], help="Set the default workspace path for tasks on a board"),
+    _cmd("set-subject-policy", [
+        _SLUG,
+        _arg("mode", choices=["allow", "deny"], help="Whether item subjects are permitted"),
+    ], help="Set the board's content subject policy"),
     _cmd("export", [
         _arg("slug", nargs="?", help="Board to export (default: the current board)"),
         _arg("-o", "--output", help="Archive path (default: ./<slug>.tar.gz)"),

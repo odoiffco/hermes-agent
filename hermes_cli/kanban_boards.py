@@ -155,6 +155,16 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_boards_set_subject_policy(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "set-subject-policy", must_exist=True)
+    if rc:
+        return rc
+    meta = kb.write_board_metadata(normed, subject_permitted=(args.mode == "allow"))
+    policy = "allow" if meta["content"]["subject_permitted"] else "deny"
+    print(f"Board {normed!r} subject policy set to {policy}.")
+    return 0
+
+
 def _cmd_boards_export(args: argparse.Namespace) -> int:
     from hermes_cli import kanban_transfer
     from hermes_cli.sizefmt import format_bytes
@@ -209,6 +219,7 @@ _BOARD_HANDLERS = {
     "show": _cmd_boards_show, "current": _cmd_boards_show,
     "rename": _cmd_boards_rename,
     "set-default-workdir": _cmd_boards_set_default_workdir,
+    "set-subject-policy": _cmd_boards_set_subject_policy,
     "export": _cmd_boards_export,
     "import": _cmd_boards_import,
 }

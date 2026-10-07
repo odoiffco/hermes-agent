@@ -665,10 +665,17 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
     return meta
 
 
+def board_subject_permitted(board: Optional[str] = None) -> bool:
+    meta = read_board_metadata(board)
+    content = meta.get("content")
+    return isinstance(content, dict) and content.get("subject_permitted") is True
+
+
 def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    subject_permitted: Optional[bool] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
@@ -685,6 +692,8 @@ def write_board_metadata(
             meta[key] = str(value)
     if archived is not None:
         meta["archived"] = bool(archived)
+    if subject_permitted is not None:
+        meta.setdefault("content", {})["subject_permitted"] = bool(subject_permitted)
     for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
         if value is not None:
             meta[key] = str(value) if value else None

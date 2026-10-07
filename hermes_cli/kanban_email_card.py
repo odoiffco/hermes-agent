@@ -70,6 +70,8 @@ def _mapping(node, allowed: set[str], required: set[str], path: str):
         if key.value not in allowed:
             _refuse("unknown_key", f"Decision schema has an unknown key at {path}.")
         values[key.value] = value
+    if "card_kind" in required and "card_kind" not in values:
+        _refuse("missing_card_kind", "Decision schema requires an authored card_kind.")
     if "comment" in required and "comment" not in values:
         _refuse("missing_option_comment", "Decision option requires a non-empty comment.")
     if required - values.keys():
@@ -189,3 +191,76 @@ from hermes_cli.kanban_email_envelope import (
     EmailVerification, inspect_email_card, parse_email_card,
     required_field_issues, required_paths, scan_email_content,
 )
+
+
+def _email_card_verdict(body, *, task_id, subject_permitted):
+    """Pure composition: shared content gate, kind dispatch, no-fill postcondition.
+
+    The parser and validators own all field rules. Their refusals are returned
+    unchanged. Acceptance must be the same authored envelope, without additions
+    or alterations by either branch; no replacement/defaulted result can pass.
+    """
+    from hermes_cli.kanban_email_proposal import validate_proposal
+    from hermes_cli.kanban_email_record import validate_record
+
+    parsed = inspect_email_card(body)
+    if isinstance(parsed, EmailCardRefusal):
+        if parsed.path == 'kind' and parsed.code == 'out_of_bounds':
+            return EmailCardRefusal('unknown_card_kind', 'kind: record or proposal required', 'kind')
+        if parsed.path == 'kind' and parsed.code == 'missing_required_field':
+            return EmailCardRefusal('missing_card_kind', 'kind: authored card kind required', 'kind')
+        return parsed
+    if parsed.content.issues:
+        return parsed.content.issues[0].to_refusal()
+    if isinstance(parsed.decision, DecisionRefusal) and parsed.decision.code in {'unknown_card_kind', 'missing_card_kind'}:
+        return parsed.decision
+    validator = {'proposal': validate_proposal, 'record': validate_record}.get(parsed.emailcard.kind)
+    if validator is None:
+        return EmailCardRefusal('unknown_card_kind', 'kind: record or proposal required', 'kind')
+    authored = parsed.emailcard.to_dict()
+    decision = parsed.decision.to_dict() if isinstance(parsed.decision, DecisionBlock) else parsed.decision
+    result = validator(parsed, own_card_id=task_id, subject_permitted=subject_permitted)
+    if isinstance(result, EmailCardRefusal):
+        return result
+    if (result is not parsed or required_field_issues(parsed.emailcard) or
+            parsed.emailcard.to_dict() != authored or
+            (parsed.decision.to_dict() if isinstance(parsed.decision, DecisionBlock) else parsed.decision) != decision):
+        return EmailCardRefusal('refuse_never_fill', 'emailcard: validator must preserve authored fields unchanged', 'emailcard')
+    return result
+
+
+def validate_email_card_body(conn, body, *, task_id, board=None, opt_in=False) -> None:
+    """D1 write-boundary entrypoint shared by CLI and tools through create_task.
+
+    D2: blockless bodies pass everywhere; machine blocks engage on sis-email or
+    explicit opt-in. Caller board intent never selects policy. D3's adapter is
+    the sole ambient read boundary; the verdict composition itself is pure.
+    On acceptance return None, never a rewritten body; refusals raise ValueError
+    with one coded reason for the existing CLI/tool exception surfaces.
+    """
+    from hermes_cli.kanban_email_board import board_snapshot, resolve_board_slug
+    from hermes_cli.kanban_db import board_subject_permitted
+
+    from hermes_cli.kanban_email_envelope import _containers, _EnvelopeInvalid
+
+    slug = resolve_board_slug(*board_snapshot(conn))
+    if not isinstance(body, str):
+        return None
+    try:
+        blocks, _prose = _containers(body)
+        has_block = any(block.machine for block in blocks)
+    except _EnvelopeInvalid as exc:
+        # A malformed machine fence must engage and receive the parser's reason,
+        # not pass through because it failed to produce a complete container.
+        has_block = exc.refusal.code in {'bad_fence', 'truncated_block'}
+    if not has_block:
+        return None
+    if slug != 'sis-email' and not opt_in:
+        return None
+    if slug is None:
+        raise ValueError('board_unresolvable: opened connection has no canonical board identity')
+    subject_ok = board_subject_permitted(slug)
+    result = _email_card_verdict(body, task_id=task_id, subject_permitted=subject_ok)
+    if isinstance(result, (EmailCardRefusal, DecisionRefusal)):
+        raise ValueError(f'{result.code}: {result.reason}')
+    return None

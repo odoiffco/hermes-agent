@@ -138,6 +138,7 @@ def test_edge_inputs():
 
 
 def test_all_schema_fields_are_required_without_fill():
-    for field in ['card_kind: proposal\n', 'revision: "opaque 001"\n', 'requires: needs_input\n',
+    assert parse_decision_block(fenced(PAYLOAD.replace('card_kind: proposal\n', ''))).code == 'missing_card_kind'
+    for field in ['revision: "opaque 001"\n', 'requires: needs_input\n',
                   '    label: "DECISION=A: keep  spaces"\n', '    effect: "unblock -> ready"\n']:
         assert parse_decision_block(fenced(PAYLOAD.replace(field, ''))).code == 'missing_field'

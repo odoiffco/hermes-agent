@@ -1440,6 +1440,8 @@ def create_task(
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
         task_id = _new_task_id()
+        from hermes_cli.kanban_email_card import validate_email_card_body
+        validate_email_card_body(conn, body, task_id=task_id, board=board)
         try:
             # allow_nested: graph builders compose create_task under one outer
             # commit so the dispatcher never sees a half-built graph.

@@ -1,0 +1,56 @@
+{
+  "own_card_id": "t_76543210",
+  "positive_control": "Authored proposal rationale; no mail content.\n```emailcard\nkind: proposal\nitem:\n  message_id: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\naction: draft_prepared\neffect: Prepare an unsent draft\nreversibility: reversible_gui\nfences:\n  - no_move\n  - no_archive\n  - no_filing\n  - content_not_on_board\n  - no_send\n  - no_reply\n  - no_forward\nevidence:\n  reason: Preparation rationale\n  snapshot_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  thread_hash: not_reviewed\nreceipts:\n  operations:\n    - key: draft\n      status: pending\nverification:\n  card_id: t_01234567\n```\n```decision\ncard_kind: proposal\nrevision: authored-r1\nrequires: needs_input\noptions:\n  - id: A\n    label: 'DECISION=A: prepare an unsent draft'\n    effect: prepare only\n    comment: 'DECISION=A: prepare an unsent draft; no sending authorized'\n```\n",
+  "tamper_cases": [
+    {
+      "name": "unknown_card_kind",
+      "body": "Authored proposal rationale; no mail content.\n```emailcard\nkind: proposal\nitem:\n  message_id: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\naction: draft_prepared\neffect: Prepare an unsent draft\nreversibility: reversible_gui\nfences:\n  - no_move\n  - no_archive\n  - no_filing\n  - content_not_on_board\n  - no_send\n  - no_reply\n  - no_forward\nevidence:\n  reason: Preparation rationale\n  snapshot_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  thread_hash: not_reviewed\nreceipts:\n  operations:\n    - key: draft\n      status: pending\nverification:\n  card_id: t_01234567\n```\n```decision\ncard_kind: alien\nrevision: authored-r1\nrequires: needs_input\noptions:\n  - id: A\n    label: 'DECISION=A: prepare an unsent draft'\n    effect: prepare only\n    comment: 'DECISION=A: prepare an unsent draft; no sending authorized'\n```\n",
+      "refusal_code": "unknown_card_kind"
+    },
+    {
+      "name": "missing_required_field",
+      "body": "Authored proposal rationale; no mail content.\n```emailcard\nkind: proposal\nitem:\n  message_id: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\naction: draft_prepared\nreversibility: reversible_gui\nfences:\n  - no_move\n  - no_archive\n  - no_filing\n  - content_not_on_board\n  - no_send\n  - no_reply\n  - no_forward\nevidence:\n  reason: Preparation rationale\n  snapshot_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  thread_hash: not_reviewed\nreceipts:\n  operations:\n    - key: draft\n      status: pending\nverification:\n  card_id: t_01234567\n```\n```decision\ncard_kind: proposal\nrevision: authored-r1\nrequires: needs_input\noptions:\n  - id: A\n    label: 'DECISION=A: prepare an unsent draft'\n    effect: prepare only\n    comment: 'DECISION=A: prepare an unsent draft; no sending authorized'\n```\n",
+      "refusal_code": "missing_required_field"
+    },
+    {
+      "name": "fence_not_asserted",
+      "body": "Authored proposal rationale; no mail content.\n```emailcard\nkind: proposal\nitem:\n  message_id: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\naction: draft_prepared\neffect: Prepare an unsent draft\nreversibility: reversible_gui\nfences:\n  - no_move\n  - no_archive\n  - no_filing\n  - content_not_on_board\n  - no_reply\n  - no_forward\nevidence:\n  reason: Preparation rationale\n  snapshot_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  thread_hash: not_reviewed\nreceipts:\n  operations:\n    - key: draft\n      status: pending\nverification:\n  card_id: t_01234567\n```\n```decision\ncard_kind: proposal\nrevision: authored-r1\nrequires: needs_input\noptions:\n  - id: A\n    label: 'DECISION=A: prepare an unsent draft'\n    effect: prepare only\n    comment: 'DECISION=A: prepare an unsent draft; no sending authorized'\n```\n",
+      "refusal_code": "missing_action_fence"
+    },
+    {
+      "name": "reversibility_unnamed",
+      "body": "Authored proposal rationale; no mail content.\n```emailcard\nkind: proposal\nitem:\n  message_id: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\naction: draft_prepared\neffect: Prepare an unsent draft\nfences:\n  - no_move\n  - no_archive\n  - no_filing\n  - content_not_on_board\n  - no_send\n  - no_reply\n  - no_forward\nevidence:\n  reason: Preparation rationale\n  snapshot_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  thread_hash: not_reviewed\nreceipts:\n  operations:\n    - key: draft\n      status: pending\nverification:\n  card_id: t_01234567\n```\n```decision\ncard_kind: proposal\nrevision: authored-r1\nrequires: needs_input\noptions:\n  - id: A\n    label: 'DECISION=A: prepare an unsent draft'\n    effect: prepare only\n    comment: 'DECISION=A: prepare an unsent draft; no sending authorized'\n```\n",
+      "refusal_code": "missing_required_field"
+    },
+    {
+      "name": "verification_not_separate",
+      "body": "Authored proposal rationale; no mail content.\n```emailcard\nkind: proposal\nitem:\n  message_id: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\naction: draft_prepared\neffect: Prepare an unsent draft\nreversibility: reversible_gui\nfences:\n  - no_move\n  - no_archive\n  - no_filing\n  - content_not_on_board\n  - no_send\n  - no_reply\n  - no_forward\nevidence:\n  reason: Preparation rationale\n  snapshot_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  thread_hash: not_reviewed\nreceipts:\n  operations:\n    - key: draft\n      status: pending\nverification:\n  card_id: t_76543210\n```\n```decision\ncard_kind: proposal\nrevision: authored-r1\nrequires: needs_input\noptions:\n  - id: A\n    label: 'DECISION=A: prepare an unsent draft'\n    effect: prepare only\n    comment: 'DECISION=A: prepare an unsent draft; no sending authorized'\n```\n",
+      "refusal_code": "self_verification"
+    },
+    {
+      "name": "message_body",
+      "body": "Authored proposal rationale; no mail content.\n```emailcard\nkind: proposal\nbody: forbidden fixture payload\nitem:\n  message_id: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\naction: draft_prepared\neffect: Prepare an unsent draft\nreversibility: reversible_gui\nfences:\n  - no_move\n  - no_archive\n  - no_filing\n  - content_not_on_board\n  - no_send\n  - no_reply\n  - no_forward\nevidence:\n  reason: Preparation rationale\n  snapshot_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  thread_hash: not_reviewed\nreceipts:\n  operations:\n    - key: draft\n      status: pending\nverification:\n  card_id: t_01234567\n```\n```decision\ncard_kind: proposal\nrevision: authored-r1\nrequires: needs_input\noptions:\n  - id: A\n    label: 'DECISION=A: prepare an unsent draft'\n    effect: prepare only\n    comment: 'DECISION=A: prepare an unsent draft; no sending authorized'\n```\n",
+      "refusal_code": "forbidden_content_key"
+    },
+    {
+      "name": "draft_text",
+      "body": "Authored proposal rationale; no mail content.\n```emailcard\nkind: proposal\ndraft_body: forbidden fixture payload\nitem:\n  message_id: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\naction: draft_prepared\neffect: Prepare an unsent draft\nreversibility: reversible_gui\nfences:\n  - no_move\n  - no_archive\n  - no_filing\n  - content_not_on_board\n  - no_send\n  - no_reply\n  - no_forward\nevidence:\n  reason: Preparation rationale\n  snapshot_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  thread_hash: not_reviewed\nreceipts:\n  operations:\n    - key: draft\n      status: pending\nverification:\n  card_id: t_01234567\n```\n```decision\ncard_kind: proposal\nrevision: authored-r1\nrequires: needs_input\noptions:\n  - id: A\n    label: 'DECISION=A: prepare an unsent draft'\n    effect: prepare only\n    comment: 'DECISION=A: prepare an unsent draft; no sending authorized'\n```\n",
+      "refusal_code": "forbidden_content_key"
+    },
+    {
+      "name": "extracted_document",
+      "body": "Authored proposal rationale; no mail content.\n```emailcard\nkind: proposal\ndocument: forbidden fixture payload\nitem:\n  message_id: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\naction: draft_prepared\neffect: Prepare an unsent draft\nreversibility: reversible_gui\nfences:\n  - no_move\n  - no_archive\n  - no_filing\n  - content_not_on_board\n  - no_send\n  - no_reply\n  - no_forward\nevidence:\n  reason: Preparation rationale\n  snapshot_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  thread_hash: not_reviewed\nreceipts:\n  operations:\n    - key: draft\n      status: pending\nverification:\n  card_id: t_01234567\n```\n```decision\ncard_kind: proposal\nrevision: authored-r1\nrequires: needs_input\noptions:\n  - id: A\n    label: 'DECISION=A: prepare an unsent draft'\n    effect: prepare only\n    comment: 'DECISION=A: prepare an unsent draft; no sending authorized'\n```\n",
+      "refusal_code": "forbidden_content_key"
+    },
+    {
+      "name": "malformed_decision",
+      "body": "Authored proposal rationale; no mail content.\n```emailcard\nkind: proposal\nitem:\n  message_id: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\naction: draft_prepared\neffect: Prepare an unsent draft\nreversibility: reversible_gui\nfences:\n  - no_move\n  - no_archive\n  - no_filing\n  - content_not_on_board\n  - no_send\n  - no_reply\n  - no_forward\nevidence:\n  reason: Preparation rationale\n  snapshot_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  thread_hash: not_reviewed\nreceipts:\n  operations:\n    - key: draft\n      status: pending\nverification:\n  card_id: t_01234567\n```\n```decision\ncard_kind: proposal\nrevision: authored-r1\nrequires: needs_input\noptions: [\n  - id: A\n    label: 'DECISION=A: prepare an unsent draft'\n    effect: prepare only\n    comment: 'DECISION=A: prepare an unsent draft; no sending authorized'\n```\n",
+      "refusal_code": "malformed_decision_block"
+    },
+    {
+      "name": "option_without_comment",
+      "body": "Authored proposal rationale; no mail content.\n```emailcard\nkind: proposal\nitem:\n  message_id: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\naction: draft_prepared\neffect: Prepare an unsent draft\nreversibility: reversible_gui\nfences:\n  - no_move\n  - no_archive\n  - no_filing\n  - content_not_on_board\n  - no_send\n  - no_reply\n  - no_forward\nevidence:\n  reason: Preparation rationale\n  snapshot_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  thread_hash: not_reviewed\nreceipts:\n  operations:\n    - key: draft\n      status: pending\nverification:\n  card_id: t_01234567\n```\n```decision\ncard_kind: proposal\nrevision: authored-r1\nrequires: needs_input\noptions:\n  - id: A\n    label: 'DECISION=A: prepare an unsent draft'\n    effect: prepare only\n```\n",
+      "refusal_code": "malformed_decision_block"
+    }
+  ]
+}

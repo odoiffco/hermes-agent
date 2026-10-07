@@ -705,6 +705,15 @@ def _handle_list(args: dict, **kw) -> str:
     """Task summaries with the same core filters as the CLI."""
     _require_orchestrator_tool("kanban_list")
     include_archived = _parse_bool_arg(args, "include_archived")
+    include_block_fields = _parse_bool_arg(args, "include_block_fields")
+    mode = args.get("mode", "rows")
+    _check(mode in ("rows", "count"), "mode must be rows or count")
+    offset = args.get("offset", 0)
+    _check(isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0,
+           "offset must be a nonnegative integer")
+    _check(mode != "count" or (offset == 0 and args.get("limit") is None
+                              and not include_block_fields),
+           "count mode does not accept limit, offset or include_block_fields")
     limit = args.get("limit")
     try:
         limit = KANBAN_LIST_DEFAULT_LIMIT if limit is None else int(limit)
@@ -716,21 +725,24 @@ def _handle_list(args: dict, **kw) -> str:
         # Match CLI list: dependencies cleared since the last dispatcher tick
         # should be visible to orchestrators immediately.
         promoted = kb.recompute_ready(conn)
+        from hermes_cli.kanban_reads import block_fields, task_counts
+        filters = dict(assignee=args.get("assignee"), status=args.get("status"),
+                       tenant=args.get("tenant"), include_archived=include_archived)
+        if mode == "count":
+            return json.dumps(task_counts(conn, **filters), separators=(",", ":"))
         # One extra row lets the output report truncation without dumping the board.
-        rows = kb.list_tasks(
-            conn, assignee=args.get("assignee"), status=args.get("status"),
-            tenant=args.get("tenant"), include_archived=include_archived, limit=limit + 1)
+        rows = kb.list_tasks(conn, **filters, limit=limit + 1, offset=offset)
         truncated = len(rows) > limit
         tasks = rows[:limit]
         states = kb.result_states(conn, tasks)
-        from hermes_cli.kanban_reads import block_fields
         return json.dumps({
             "tasks": [{**_task_summary_dict(kb, conn, t), "result_state": states[t.id],
-                       **block_fields(conn, t)} for t in tasks],
+                       **(block_fields(conn, t) if include_block_fields else {})} for t in tasks],
             "count": len(tasks), "limit": limit, "truncated": truncated,
+            "has_more": truncated, "next_offset": offset + len(tasks) if truncated else None,
             "next_limit": (min(limit * 2, KANBAN_LIST_MAX_LIMIT)
                            if truncated and limit < KANBAN_LIST_MAX_LIMIT else None),
-            "promoted": promoted})
+            "promoted": promoted}, separators=(",", ":"))
 
 
 @_kanban_handler("kanban_complete")

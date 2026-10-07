@@ -72,12 +72,14 @@ KANBAN_LIST_SCHEMA = _schema(
     (
         "List Kanban task summaries so an orchestrator profile can discover "
         "work to route. Supports the same core filters as the CLI: assignee, "
-        "status, tenant, include_archived, and limit. Returns compact rows "
-        "with ids, title, status, assignee, priority, parent/child ids, and "
-        "counts, block_kind, block_recurrences and historical latest_block "
-        "(kind/requested_kind and a visibly capped reason excerpt). "
-        "Bounded to 50 rows by default, 200 max, with truncation "
-        "metadata. Also recomputes ready tasks before listing, matching the "
+        "status, tenant and include_archived. Default rows omit block metadata; "
+        "include_block_fields opts into block_kind, block_recurrences and historical "
+        "latest_block with a capped reason. mode=count returns exact counts_by_status "
+        "and count via SQL, without task rows; use assignee for per-profile counts. "
+        "Rows are bounded to 50 by default, 200 max. Iterate next_offset as offset "
+        "with the same filters and limit until has_more/truncated is false. Ordering "
+        "is priority DESC, created_at ASC, id ASC; offset paging assumes the filtered "
+        "set does not change between calls. Also recomputes ready tasks, matching the "
         "CLI. Orchestrator-only — dispatcher-spawned task workers never see "
         "this tool."
     ),
@@ -86,14 +88,18 @@ KANBAN_LIST_SCHEMA = _schema(
         "status": {
             "type": "string",
             "enum": [
-                "triage", "todo", "ready", "running",
-                "blocked", "done", "archived",
+                "triage", "todo", "scheduled", "ready", "running",
+                "blocked", "review", "done", "archived",
             ],
             "description": "Optional task status filter.",
         },
         "tenant": _prop("string", "Optional tenant/project namespace filter."),
         "include_archived": _prop("boolean", "Include archived tasks. Defaults to false."),
         "limit": _prop("integer", "Optional maximum rows to return (default 50, max 200)."),
+        "offset": _prop("integer", "Rows to skip (default 0). Pass next_offset to continue; keep filters and limit unchanged."),
+        "include_block_fields": _prop("boolean", "Opt into the three block metadata fields (default false; rows mode only)."),
+        "mode": {"type": "string", "enum": ["rows", "count"],
+                 "description": "Default rows. count returns exact total and every status (including zero), respecting filters. No limit, offset or block fields in count mode. Archived counts require include_archived=true or status=archived."},
     },
     [],
 )

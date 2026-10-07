@@ -7,6 +7,36 @@ COMMENT_CHUNK_CHARS = 4000
 BLOCK_REASON_CHARS = 500
 
 
+def task_filter(*, assignee=None, status=None, tenant=None, session_id=None,
+                include_archived=False, workflow_template_id=None, current_step_key=None):
+    """One filter contract for row reads and SQL aggregates."""
+    from hermes_cli import kanban_db as kb
+    if status is not None and status not in kb.VALID_STATUSES:
+        raise ValueError(f"status must be one of {sorted(kb.VALID_STATUSES)}")
+    where, params = '1=1', []
+    for col, val in (
+        ('assignee', kb._canonical_assignee(assignee)), ('status', status), ('tenant', tenant),
+        ('session_id', session_id), ('workflow_template_id', workflow_template_id),
+        ('current_step_key', current_step_key),
+    ):
+        if val is not None:
+            where += f' AND {col} = ?'
+            params.append(val)
+    if not include_archived and status != 'archived':
+        where += " AND status != 'archived'"
+    return where, params
+
+
+def task_counts(conn, **filters):
+    """Exact status totals without loading Task objects, bodies or histories."""
+    from hermes_cli import kanban_db as kb
+    where, params = task_filter(**filters)
+    counts = dict.fromkeys(sorted(kb.VALID_STATUSES), 0)
+    counts.update(conn.execute(
+        f'SELECT status, COUNT(*) FROM tasks WHERE {where} GROUP BY status', params).fetchall())
+    return {'mode': 'count', 'count': sum(counts.values()), 'counts_by_status': counts}
+
+
 def block_fields(conn, task):
     """Append-only row metadata; historical block events are labelled as such."""
     row = conn.execute(

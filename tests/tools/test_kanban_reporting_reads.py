@@ -34,7 +34,7 @@ def test_list_block_fields_append_and_reason_is_visible(board, capsys):
     from hermes_cli import kanban as cli, kanban_db_connect as kbc, kanban_db as kb
     from hermes_cli.kanban_output import _task_to_dict
     tid, *_ = board
-    row = dispatch('kanban_list', {'status': 'blocked'})['tasks'][0]
+    row = dispatch('kanban_list', {'status': 'blocked', 'include_block_fields': True})['tasks'][0]
     assert row['id'] == tid
     assert row['block_kind'] == 'capability'
     assert row['block_recurrences'] >= 1
@@ -112,7 +112,7 @@ def test_unblocked_rows_keep_history_distinct_from_status(board):
     from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
     with kbc.connect_closing() as conn:
         kb.unblock_task(conn, board[0])
-    row = dispatch('kanban_list', {})['tasks'][0]
+    row = dispatch('kanban_list', {'include_block_fields': True})['tasks'][0]
     assert row['status'] != 'blocked'
     assert row['latest_block']['kind'] == 'capability'
 
@@ -123,7 +123,7 @@ def test_each_block_kind_and_rekind_are_readable(board, kind):
     with kbc.connect_closing() as conn:
         tid = kb.create_task(conn, title='kind contract', assignee='builder')
         assert kb.block_task(conn, tid, kind=kind, reason='new cause')
-    row = next(r for r in dispatch('kanban_list', {'status': 'blocked'})['tasks'] if r['id'] == tid)
+    row = next(r for r in dispatch('kanban_list', {'status': 'blocked', 'include_block_fields': True})['tasks'] if r['id'] == tid)
     effective = 'needs_input' if kind == 'dependency' else kind
     assert 'block_kind' in row and row['block_kind'] == effective
     assert row['latest_block']['kind'] == effective

@@ -37,8 +37,25 @@ Both surfaces route through the same `kanban_db` layer, so reads see a consisten
 
 ### Reporting blocked cards and long threads
 
-`kanban_list` and `hermes kanban list --json` append `block_kind`,
-`block_recurrences`, and `latest_block` without changing status semantics.
+`kanban_list` omits block metadata by default. Request it explicitly with
+`include_block_fields=true`; `hermes kanban list --json` continues to append
+`block_kind`, `block_recurrences`, and `latest_block` without changing status semantics.
+
+For exact totals without loading task rows, use `kanban_list(mode="count",
+include_archived=true)`. The result contains `count` and `counts_by_status` for
+all statuses, including zero counts. The same status, assignee, tenant, and
+archive filters apply; for per-assignee totals add `assignee="pita"`. Count mode
+does not accept a row limit, nonzero offset, or block metadata. Its output size
+is independent of task count (apart from integer digit length).
+
+Row mode retains the 50-row default and 200-row maximum. Enumerate larger sets
+by passing `next_offset` as `offset` with the same filters and limit, stopping
+when `has_more`/`truncated` is false (`next_offset=null`). Ordering is priority
+descending, creation time ascending, then id ascending to resolve ties.
+Offset paging is deterministic for an unchanged filtered set, not a snapshot:
+if membership or sort keys change during traversal, restart the enumeration.
+No inline output cap is raised; choose a smaller page for verbose rows.
+
 `latest_block` is historical: its `event_kind`, effective `kind`, and
 `requested_kind` describe the most recent block/dependency-wait/loop event,
 not necessarily the card's current status. Its reason excerpt is capped at

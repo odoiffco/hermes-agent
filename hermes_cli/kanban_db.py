@@ -1612,21 +1612,16 @@ def list_tasks(
     tenant: Optional[str] = None, session_id: Optional[str] = None, include_archived: bool = False,
     limit: Optional[int] = None, order_by: Optional[str] = None,
     workflow_template_id: Optional[str] = None, current_step_key: Optional[str] = None,
+    offset: int = 0,
 ) -> list[Task]:
-    if status is not None and status not in VALID_STATUSES:
-        raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
-    query = "SELECT * FROM tasks WHERE 1=1"
-    params: list[Any] = []
-    for col, val in (
-        ("assignee", _canonical_assignee(assignee)), ("status", status), ("tenant", tenant),
-        ("session_id", session_id), ("workflow_template_id", workflow_template_id),
-        ("current_step_key", current_step_key),
-    ):
-        if val is not None:
-            query += f" AND {col} = ?"
-            params.append(val)
-    if not include_archived and status != "archived":
-        query += " AND status != 'archived'"
+    from hermes_cli.kanban_reads import task_filter
+    where, params = task_filter(
+        assignee=assignee, status=status, tenant=tenant, session_id=session_id,
+        workflow_template_id=workflow_template_id, current_step_key=current_step_key,
+        include_archived=include_archived)
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ValueError("offset must be a nonnegative integer")
+    query = f"SELECT * FROM tasks WHERE {where}"
     if order_by is not None:
         order_by = order_by.strip().lower()
         if order_by not in VALID_SORT_ORDERS:
@@ -1634,8 +1629,15 @@ def list_tasks(
         query += f" ORDER BY {VALID_SORT_ORDERS[order_by]}"
     else:
         query += " ORDER BY priority DESC, created_at ASC"
+    query += ", id ASC"
     if limit:
-        query += f" LIMIT {int(limit)}"
+        query += " LIMIT ?"
+        params.append(int(limit))
+    elif offset:
+        query += " LIMIT -1"
+    if offset:
+        query += " OFFSET ?"
+        params.append(offset)
     rows = conn.execute(query, params).fetchall()
     return [Task.from_row(r) for r in rows]
 

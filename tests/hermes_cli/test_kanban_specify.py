@@ -151,6 +151,66 @@ def _run_cli(*argv: str) -> int:
 
 
 
+@pytest.mark.parametrize("hold", ["needs_input", "decision", "decision_spacing"])
+def test_cli_specify_sweep_preserves_decision_records(kanban_home, monkeypatch, capsys, hold):
+    with kbc.connect() as conn:
+        held = kb.create_task(conn, title="Authoritative title", body="Authoritative premise",
+                              assignee="builder", priority=7, tenant="proj-a", triage=hold != "needs_input")
+        if hold == "needs_input":
+            assert kb.block_task(conn, held, kind="needs_input", reason="Await authorization")
+            assert kb.unblock_task(conn, held)
+            assert kb.block_task(conn, held, kind="needs_input", reason="Await authorization")
+        else:
+            marker = "DECISION=B: defer" if hold == "decision" else "decision = A: bounded probe only"
+            kb.add_comment(conn, held, "operator", marker)
+        before = kb.get_task(conn, held)
+        assert before is not None
+        assert before.status == "triage"
+        comments = [tuple(row) for row in conn.execute("SELECT * FROM task_comments WHERE task_id=?", (held,))]
+        events = [tuple(row) for row in conn.execute("SELECT * FROM task_events WHERE task_id=?", (held,))]
+        normal = kb.create_task(conn, title="Rough idea", body="Original scope", assignee="builder",
+                                priority=3, tenant="proj-a", triage=True)
+    calls = []
+    body = "**Goal**\nConcrete normal scope." + ACCEPTANCE
+    def aux(verb, tid, **kwargs):
+        calls.append(tid)
+        return jsonlib.dumps({"title": "Refined idea", "body": body}), ""
+    monkeypatch.setattr(spec, "_call_aux", aux)
+    assert _run_cli("specify", "--all", "--tenant", "proj-a", "--json") == 0
+    output = [jsonlib.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    with kbc.connect() as conn:
+        after = kb.get_task(conn, held)
+        produced = kb.get_task(conn, normal)
+        assert after is not None and produced is not None
+        print(f"{hold}: held {before.status}->{after.status}; title={after.title!r}; calls={calls}")
+        assert after == before
+        assert [tuple(row) for row in conn.execute("SELECT * FROM task_comments WHERE task_id=?", (held,))] == comments
+        assert [tuple(row) for row in conn.execute("SELECT * FROM task_events WHERE task_id=?", (held,))] == events
+        assert produced.status == "ready"
+        assert (produced.title, produced.body, produced.assignee, produced.priority, produced.tenant) == (
+            "Refined idea", body, "builder", 3, "proj-a")
+    assert calls == [normal]
+    assert output == [{"task_id": normal, "ok": True, "reason": "specified", "new_title": "Refined idea"}]
+
+
+@pytest.mark.parametrize("hold", ["needs_input", "decision"])
+def test_explicit_specify_refuses_held_triage_card(kanban_home, monkeypatch, hold):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Keep premise", assignee="builder", triage=hold == "decision")
+        if hold == "needs_input":
+            assert kb.block_task(conn, tid, kind="needs_input", reason="Await decision")
+            assert kb.unblock_task(conn, tid)
+            assert kb.block_task(conn, tid, kind="needs_input", reason="Await decision")
+        else:
+            kb.add_comment(conn, tid, "operator", "DECISION=B: defer")
+    def unexpected(*args, **kwargs):
+        pytest.fail("Held card must not call auxiliary model")
+    monkeypatch.setattr(spec, "_call_aux", unexpected)
+    outcome = spec.specify_task(tid)
+    assert not outcome.ok
+    assert ("needs_input" if hold == "needs_input" else "DECISION") in outcome.reason
+
+
 def test_cli_specify_tenant_filter(kanban_home, capsys):
     with kbc.connect() as conn:
         outside = kb.create_task(conn, title="outside", triage=True)

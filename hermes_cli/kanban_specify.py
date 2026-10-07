@@ -21,6 +21,7 @@ from typing import Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli.kanban_db_graph import decomposition_hold_reason
 
 from utils import env_int
 
@@ -224,6 +225,12 @@ def specify_task(
     if task is None:
         return SpecifyOutcome(task_id, False, reason)
 
+    # Re-specification must honor the same human-decision holds as decomposition.
+    with kbc.connect_closing() as conn:
+        hold = decomposition_hold_reason(conn, task_id)
+    if hold:
+        return SpecifyOutcome(task_id, False, hold)
+
     raw, reason = _call_aux(
         "specify", task_id, aux_task="triage_specifier", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(**_task_prompt_fields(task)),
@@ -261,7 +268,7 @@ def specify_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Task ids in the triage column; ``tenant`` narrows the sweep."""
+    """Specifiable triage ids; human decision records stay with their worker."""
     with kbc.connect_closing() as conn:
         tasks = kb.list_tasks(conn, status="triage", tenant=tenant, include_archived=False)
-    return [t.id for t in tasks]
+        return [t.id for t in tasks if not decomposition_hold_reason(conn, t.id)]

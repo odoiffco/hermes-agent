@@ -47,3 +47,32 @@ def test_auto_decompose_tick_reads_launch_profile_secrets_under_multiplex(monkey
     assert decomposed == 1
     assert seen["value"] == "launch-profile-key"
     assert ss.current_secret_scope() is None
+
+
+def test_auto_decompose_per_tick_caps_attempts_across_boards(monkeypatch, tmp_path):
+    import hermes_cli
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(kwd, "_board_slugs", lambda kb: ["first", "second", "third"])
+    import os
+    listed = []
+    attempted = []
+
+    def list_triage():
+        board = os.environ["HERMES_KANBAN_BOARD"]
+        listed.append(board)
+        return [board + "-a", board + "-b"]
+
+    def decompose(task_id, author=None):
+        attempted.append(task_id)
+        return SimpleNamespace(ok=task_id != "first-a", fanout=False,
+                               child_ids=None, reason="test failure")
+
+    fake = SimpleNamespace(list_triage_ids=list_triage, decompose_task=decompose)
+    monkeypatch.setitem(sys.modules, "hermes_cli.kanban_decompose", fake)
+    monkeypatch.setattr(hermes_cli, "kanban_decompose", fake, raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "original")
+    assert _dispatcher().auto_decompose_tick(3) == 2
+    assert attempted == ["first-a", "first-b", "second-a"]
+    assert listed == ["first", "second"]
+    assert os.environ["HERMES_KANBAN_BOARD"] == "original"

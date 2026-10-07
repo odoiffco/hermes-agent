@@ -70,6 +70,26 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_decompose_p10_store_receipt(kanban_home):
+    import json
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="p10 receipt", assignee="mason",
+                             priority=10, triage=True, max_runtime_seconds=1800)
+        ids = decompose_triage_task(conn, tid, root_assignee="mason", children=[
+            {"title": "parallel A", "assignee": "mason", "parents": []},
+            {"title": "parallel B", "assignee": "mason", "parents": []},
+            {"title": "dependent", "assignee": "mason", "parents": [0, 1]},
+        ])
+    assert ids is not None and len(ids) == 3
+    with kbc.connect() as conn:
+        rows = [dict(conn.execute(
+            "SELECT id, priority, assignee, status FROM tasks WHERE id = ?", (cid,),
+        ).fetchone()) for cid in [tid, *ids]]
+    print("STORE_RECEIPT=" + json.dumps({"parent": rows[0], "children": rows[1:]}))
+    assert all(row["priority"] == rows[0]["priority"] == 10 for row in rows[1:])
+
+
 def test_decompose_records_audit_comment_and_event(kanban_home):
     with kbc.connect() as conn:
         tid = _create_triage(conn)

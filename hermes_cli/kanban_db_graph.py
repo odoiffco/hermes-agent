@@ -117,6 +117,7 @@ def decompose_triage_task(
 
     ``children``: dicts of ``title`` (required), ``body``, ``assignee``,
     ``parents`` (indices into this list), optional workspace overrides.
+    Every child inherits the root's priority from the same write transaction.
     Returns child ids in input order, or None when the root is missing / not
     in triage, or has already decomposed. Atomic: malformed entries abort fan-out.
     """
@@ -136,7 +137,7 @@ def decompose_triage_task(
     now = int(time.time())
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, priority, workspace_kind, workspace_path "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if root_row is None or root_row["status"] != "triage":
@@ -226,12 +227,12 @@ def _insert_decomposed_child(
     conn.execute(
         "INSERT INTO tasks "
         "(id, title, body, assignee, status, workspace_kind, "
-        " workspace_path, tenant, created_at, created_by, max_runtime_seconds) "
-        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
+        " workspace_path, tenant, priority, created_at, created_by, max_runtime_seconds) "
+        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?)",
         (
             new_id, child["title"].strip(), body if isinstance(body, str) else None,
             _canonical_assignee(child.get("assignee")), child_ws_kind, child_ws_path,
-            root_row["tenant"], now, (author or "decomposer"),
+            root_row["tenant"], root_row["priority"], now, (author or "decomposer"),
             max_runtime_seconds,
         ),
     )

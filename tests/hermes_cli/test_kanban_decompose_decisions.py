@@ -116,8 +116,8 @@ def test_normal_five_slice_graph_retains_shape_rollup_and_execution_owner(board,
         assert root.assignee == "router" and root.status == "todo"
         assert all(c.assignee == "builder" for c in children)
         assert [c.status for c in children] == ["ready"] + ["todo"] * 4
-        # Preserve existing priority behavior (DB default, not inherited priority).
-        assert all(c.priority == 0 for c in children)
+        # Children inherit the parent's p7 under the sibling priority fix.
+        assert all(c.priority == 7 for c in children)
         assert [c.body for c in children] == [x["body"] for x in payload["tasks"]]
         links = {tuple(row) for row in conn.execute("SELECT parent_id,child_id FROM task_links")}
         expected = {(cid, tid) for cid in result.child_ids}

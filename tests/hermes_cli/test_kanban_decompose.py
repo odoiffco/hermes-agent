@@ -80,6 +80,50 @@ def _patch_list_profiles(names: list[str]):
     ]
 
 
+@pytest.mark.parametrize("priority", [7, 10, -3])
+@pytest.mark.parametrize("routing_config, fallback, orchestrator", [
+    ({}, "engineer", "engineer"),
+    ({"default_assignee": "researcher", "orchestrator_profile": "orchestrator"},
+     "researcher", "orchestrator"),
+    ({"default_assignee": "missing", "orchestrator_profile": "missing"},
+     "engineer", "engineer"),
+])
+def test_decompose_inherits_priority_with_routing_fallbacks(
+    kanban_home, priority, routing_config, fallback, orchestrator,
+):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="priority fanout", assignee="engineer",
+                             priority=priority, triage=True)
+    payload = jsonlib.dumps({"fanout": True, "tasks": [
+        {"title": "explicit", "body": ACCEPTANCE, "assignee": "researcher", "parents": []},
+        {"title": "unknown", "body": ACCEPTANCE, "assignee": "missing", "parents": []},
+        {"title": "null", "body": ACCEPTANCE, "assignee": None, "parents": [0, 1]},
+    ]})
+    patches = _patch_list_profiles(["private", "engineer", "researcher", "orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(payload), patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"kanban": routing_config},
+        ):
+            outcome = decomp.decompose_task(tid, author="test")
+    finally:
+        for p in patches:
+            p.stop()
+    assert outcome.ok, outcome.reason
+    assert len(outcome.child_ids) == 3
+    with kbc.connect() as conn:
+        root = kb.get_task(conn, tid)
+        children = [kb.get_task(conn, cid) for cid in outcome.child_ids]
+    assert root.priority == priority
+    assert all(child.priority == root.priority for child in children)
+    assert [child.assignee for child in children] == ["researcher", fallback, fallback]
+    assert root.assignee == orchestrator
+    assert [child.status for child in children] == ["ready", "ready", "todo"]
+    assert root.status == "todo"
+
+
 def test_decompose_with_fanout_creates_children(kanban_home):
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="ship a feature", triage=True)

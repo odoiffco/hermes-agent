@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [Honcho, Memory, Profiles, Observation, Dialectic, User-Modeling, Session-Summary]
     homepage: https://docs.honcho.dev
-    related_skills: [hermes-agent, honcho-context-practice]
+    related_skills: [hermes-agent]
 prerequisites:
   pip: [honcho-ai]
 ---
